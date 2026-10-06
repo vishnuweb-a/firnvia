@@ -565,6 +565,23 @@ router.post("/payu/initiate", (req, res) => {
     return res.status(400).json({ error: "orderId required." });
 
   if (!payuConfigured()) {
+    // TEMPORARY DIAGNOSTIC — remove after the production config check.
+    // Presence booleans only: never the key, salt, client id or client secret.
+    console.log("[payu config diagnostic]", {
+      keyPresent:          Boolean(process.env.PAYU_KEY?.trim()),
+      saltPresent:         Boolean(process.env.PAYU_SALT?.trim()),
+      clientIdPresent:     Boolean(process.env.PAYU_CLIENT_ID?.trim()),
+      clientSecretPresent: Boolean(process.env.PAYU_CLIENT_SECRET?.trim()),
+
+      env:        process.env.PAYU_ENV,
+      paymentUrl: process.env.PAYU_PAYMENT_URL,
+      verifyUrl:  process.env.PAYU_VERIFY_URL,
+
+      // Also required by payuConfigured(), and not a secret.
+      publicBaseUrl: process.env.PUBLIC_BASE_URL,
+
+      nodeEnv: process.env.NODE_ENV,
+    });
     console.error("[payu initiate] PayU production configuration unavailable");
     return res.status(503).json({ error: "PayU is unavailable." });
   }
