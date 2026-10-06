@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment files -- never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+
+# Test / coverage output
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/

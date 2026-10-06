@@ -1,0 +1,23 @@
+{
+  "name": "firvanra-backend",
+  "version": "1.0.0",
+  "description": "Node/Express backend: products, cart, orders, AirPay payment integration",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test services/payu.test.js services/sabpaisa.test.js routes/payment.payu.test.js routes/payment.sabpaisa.test.js routes/payment.sabpaisa.noenquiry.test.js routes/payment.airpay.production.test.js routes/payment.preflight.e2e.test.js server.health.test.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "crc-32": "^1.2.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "nanoid": "^5.0.7"
+  }
+}
