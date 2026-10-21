@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/utils/payment.test.js src/api.payment.test.js src/pages/checkout.flow.test.js"
+    "test": "node --test src/utils/payment.test.js src/api.payment.test.js src/pages/checkout.flow.test.js src/airpay2.payment.test.js"
   },
   "dependencies": {
     "react": "^18.3.1",

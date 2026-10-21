@@ -19,6 +19,8 @@ async function req(path, opts = {}) {
 const initiators = {
   airpay: (orderId) =>
     req("/payment/airpay/initiate", { method: "POST", body: { orderId } }),
+  airpay_2: (orderId) =>
+    req("/payment/airpay-2/initiate", { method: "POST", body: { orderId } }),
   sabpaisa: (orderId) =>
     req("/payment/sabpaisa/initiate", { method: "POST", body: { orderId } }),
   payu: (orderId) =>

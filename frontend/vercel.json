@@ -9,6 +9,10 @@
       "destination": "https://api.firvanra.online/api/:path*"
     },
     {
+      "source": "/callback/cpm/arp_firvanra/collection",
+      "destination": "https://api.firvanra.online/callback/cpm/arp_firvanra/collection"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

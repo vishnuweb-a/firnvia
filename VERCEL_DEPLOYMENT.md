@@ -214,6 +214,36 @@ config) — no `sandbox`/`test` host is present.
 > certificate verification when the value is anything other than the string
 > `"true"`.
 
+### AirPay 2 (second merchant) — secrets
+
+Used only by the AirPay 2 checkout option and its callback/IPN. There is no
+fallback to the original `AIRPAY_*` values: if any of these six is missing,
+`POST /api/payment/airpay-2/initiate` returns 503 and callbacks are not
+processed or forwarded.
+
+| Variable                 | Type   | Status | Vercel value / action      |
+| ------------------------ | ------ | ------ | -------------------------- |
+| `AIRPAY_MID_2`           | SECRET | Set    | Copy from `backend/.env`   |
+| `AIRPAY_USERNAME_2`      | SECRET | Set    | Copy from `backend/.env`   |
+| `AIRPAY_PASSWORD_2`      | SECRET | Set    | Copy from `backend/.env`   |
+| `AIRPAY_API_KEY_2`       | SECRET | Set    | Copy from `backend/.env` (used as the AirPay `privatekey` secret) |
+| `AIRPAY_CLIENT_ID_2`     | SECRET | Set    | Copy from `backend/.env`   |
+| `AIRPAY_CLIENT_SECRET_2` | SECRET | Set    | Copy from `backend/.env`   |
+
+### AirPay 2 — optional config
+
+Omit all of these unless AirPay specifies different values; the code defaults to
+AirPay's documented production endpoints.
+
+| Variable                  | Default when omitted                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `AIRPAY_ENCRYPTION_KEY_2` | derived: `md5(username~:~password)`                         |
+| `AIRPAY_OAUTH_URL_2`      | `https://kraken.airpay.co.in/airpay/pay/v4/api/oauth2/`     |
+| `AIRPAY_PAY_URL_2`        | `https://payments.airpay.co.in/pay/v4/`                     |
+| `AIRPAY_VERIFY_URL_2`     | `https://kraken.airpay.co.in/airpay/pay/v4/api/verify/`     |
+
+`AIRPAY_INSECURE_TLS` does not apply to AirPay 2; its TLS verification is always on.
+
 ### SabPaisa — secrets
 
 | Variable                   | Type   | Status | Vercel value / action      |
@@ -342,6 +372,28 @@ reads both v4 lowercase (`orderid`, `ap_transactionid`, `transaction_status`,
 `ap_SecureHash`) and legacy uppercase variants, and **fails closed** if
 `ap_SecureHash` is absent.
 
+### AirPay 2 (second merchant)
+
+| Purpose                         | URL                                                          |
+| ------------------------------- | ------------------------------------------------------------ |
+| Response URL (success/failed)   | `https://firvanra.online/callback/cpm/arp_firvanra/collection` |
+| IPN URL (webhook)               | `https://firvanra.online/callback/cpm/arp_firvanra/collection` |
+
+Both are the same URL, set in the AirPay 2 merchant dashboard. `frontend/vercel.json`
+proxies this exact path to `https://api.firvanra.online` ahead of the SPA
+fallback. Verified callbacks are relayed server-to-server to
+`https://kkchat.in/callback/cpm/arp_firvanra/collection`. AirPay's Verify API must
+be enabled for this MID. See `docs/FIRVANRA_SECOND_AIRPAY_IMPLEMENTATION_REPORT.md`.
+
+Post-deploy check:
+
+```bash
+curl -i https://firvanra.online/callback/cpm/arp_firvanra/collection
+# → 405 JSON {"error":"Method Not Allowed"}  (HTML here means the rewrite is missing)
+curl -i -X POST -H 'Content-Type: application/json' -d '{"orderId":"FIR-none"}'   https://firvanra.online/api/payment/airpay-2/initiate
+# → 404 "Order not found."  (503 means an AIRPAY_*_2 variable is missing in Vercel)
+```
+
 ---
 
 ## Known demo limitation
@@ -367,3 +419,6 @@ This is a known and accepted property of the demo, not a deployment defect.
 5. Attach `firvanra.online` to the frontend project.
 6. Confirm `https://firvanra.online/api/health` reaches the backend.
 7. Register the provider webhook/callback URLs in each merchant dashboard.
+8. Add the six `AIRPAY_*_2` variables to `firvanra-api` (Production) and redeploy.
+9. Set the AirPay 2 Response URL and IPN URL in the AirPay 2 dashboard, and
+   confirm with AirPay that the Verify API is enabled for that MID.

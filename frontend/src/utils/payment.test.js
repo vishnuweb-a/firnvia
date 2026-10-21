@@ -39,10 +39,11 @@ const fieldsOf = (form) =>
   Object.fromEntries(form.children.map((i) => [i.name, i.value]));
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
-test("AirPay, SabPaisa and PayU options are all offered", () => {
+test("AirPay, AirPay 2, SabPaisa and PayU options are all offered", () => {
   const ids = PAYMENT_PROVIDERS.map((p) => p.id);
-  assert.deepEqual(ids, ["airpay", "sabpaisa", "payu"]);
+  assert.deepEqual(ids, ["airpay", "airpay_2", "sabpaisa", "payu"]);
   assert.equal(providerName("airpay"), "AirPay");
+  assert.equal(providerName("airpay_2"), "AirPay 2");
   assert.equal(providerName("sabpaisa"), "SabPaisa");
   assert.equal(providerName("payu"), "PayU");
 });

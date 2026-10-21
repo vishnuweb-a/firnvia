@@ -6,9 +6,19 @@ import products from "./routes/products.js";
 import orders from "./routes/orders.js";
 import payment from "./routes/payment.js";
 import contact from "./routes/contact.js";
+import airpay2, {
+  AIRPAY2_CALLBACK_PATH,
+  airpay2Callback,
+  airpay2CallbackMethodNotAllowed,
+} from "./routes/airpay2.js";
 
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+
+// AirPay 2 Response URL + IPN URL. Registered BEFORE the global body parsers:
+// the route reads the raw bytes itself so they can be relayed to KKChat as-is.
+app.post(AIRPAY2_CALLBACK_PATH, ...airpay2Callback);
+app.get(AIRPAY2_CALLBACK_PATH, airpay2CallbackMethodNotAllowed);
 
 // Capture raw body for SabPaisa webhook signature verification before JSON parsing.
 app.use(express.json({
@@ -21,6 +31,7 @@ app.get("/api/health", (_, res) => res.json({ ok: true, service: "firvanra-api" 
 app.use("/api/products", products);
 app.use("/api/orders", orders);
 app.use("/api/payment", payment);
+app.use("/api/payment/airpay-2", airpay2);
 app.use("/api/contact", contact);
 
 // ── Legacy SabPaisa relay endpoint ───────────────────────────────────────────

@@ -5,6 +5,7 @@
 
 export const PAYMENT_PROVIDERS = [
   { id: "airpay", name: "AirPay", blurb: "Secure hosted checkout" },
+  { id: "airpay_2", name: "AirPay 2", blurb: "Secure hosted checkout" },
   { id: "sabpaisa", name: "SabPaisa", blurb: "UPI, cards and net banking" },
   { id: "payu", name: "PayU", blurb: "UPI, cards and net banking" },
 ];
