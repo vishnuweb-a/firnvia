@@ -307,14 +307,25 @@ async function handleAirpay2Callback(req, res) {
   const fwd = await forwardAirpay2Callback({
     rawBody: raw,
     contentType: contentType || "application/x-www-form-urlencoded",
+    fields: body, // exactly what was verified; used when forwarding as JSON
     dedupKey: `${cb.apTxnId}:${cb.txnStatus}`,
     logRef: cb.apTxnId,
   });
+  // `acknowledgement` is the only field that speaks for KKChat's processing;
+  // "unconfirmed" means it was not established, whatever the HTTP status.
   logSummary({
     forwarding: {
       destination: "kkchat",
       status: fwd.duplicate ? "duplicate" : fwd.ok ? "delivered" : "failed",
+      ...(fwd.request_format && { request_format: fwd.request_format }),
+      ...(fwd.request_content_type && { request_content_type: fwd.request_content_type }),
       ...(fwd.status !== undefined && { http_status: fwd.status }),
+      ...(fwd.response && {
+        response_content_type: fwd.response.content_type,
+        response_kind: fwd.response.kind,
+        response_json: fwd.response.json,
+      }),
+      acknowledgement: fwd.acknowledgement || "unconfirmed",
       ...(fwd.attempts !== undefined && { attempts: fwd.attempts }),
       ...(fwd.error && { error: fwd.error }),
     },

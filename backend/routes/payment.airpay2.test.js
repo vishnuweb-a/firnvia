@@ -76,6 +76,7 @@ globalThis.fetch = async (url, init = {}) => {
     kk.calls.push({
       url: String(url), method: init.method,
       contentType: init.headers?.["Content-Type"],
+      accept: init.headers?.Accept,
       body: Buffer.from(init.body).toString("utf8"),
     });
     return kk.respond(init);
@@ -100,6 +101,8 @@ beforeEach(() => {
   oauthBehaviour = null;
   _resetForwarderState();
   Object.assign(process.env, M1, M2);
+  delete process.env.AIRPAY2_KKCHAT_FORMAT;
+  delete process.env.AIRPAY2_KKCHAT_ACK;
 });
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -636,6 +639,7 @@ test("forwarder: exact destination, POST, raw bytes, content type", async () => 
   assert.deepEqual(kk.calls[0], {
     url: KKCHAT, method: "POST",
     contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+    accept: undefined,
     body: raw.toString(),
   });
 });
@@ -941,7 +945,13 @@ test("structured summary: unknown local order, verified, delivered; no secrets",
     provider: "airpay2", channel: "ambiguous", format: "form",
     orderid: cb.orderid, ap_transactionid: cb.ap_transactionid,
     verification: "verified", outcome: "paid", local_order: "unknown",
-    forwarding: { destination: "kkchat", status: "delivered", http_status: 200, attempts: 1 },
+    forwarding: {
+      destination: "kkchat", status: "delivered",
+      request_format: "raw", request_content_type: "application/x-www-form-urlencoded",
+      http_status: 200, response_content_type: "text/plain;charset=UTF-8",
+      response_kind: "text", response_json: "n/a",
+      acknowledgement: "unconfirmed", attempts: 1,
+    },
   });
   const all = lines.join("\n");
   for (const secret of Object.values(M2).filter((v) => v !== M2.AIRPAY_MID_2))
@@ -1066,4 +1076,225 @@ test("proxied forged callback: rejected, nothing verified or forwarded", async (
   assert.equal(orders.get(order.id).status, "pending");
   assert.equal(verifyCalls().length, 0);
   assert.equal(kk.calls.length, 0);
+});
+
+// ═════════════════════════════ KKChat JSON contract ════════════════════════
+// AIRPAY2_KKCHAT_FORMAT=json switches the request to JSON; AIRPAY2_KKCHAT_ACK
+// names the acknowledgement field/values. Neither is set in production until
+// KKChat confirms its contract, so these tests set them explicitly.
+
+const { buildKkchatRequest, inspectResponse, ackRule, forwardFormat } =
+  await import("../services/kkchatForwarder.js");
+const jsonReply = (obj, status = 200) => () => new Response(JSON.stringify(obj), {
+  status, headers: { "Content-Type": "application/json" },
+});
+const HTML_200 = () => new Response("<!doctype html><html><body>app</body></html>", {
+  status: 200, headers: { "Content-Type": "text/html; charset=utf-8" },
+});
+
+test("json mode, form callback: JSON object of the original fields, JSON headers", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  const cb = callback({ orderid: "KKC-json-form" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postServerForm(cb);
+  assert.equal(res.status, 200);
+  assert.equal(kk.calls.length, 1);
+  assert.equal(kk.calls[0].url, KKCHAT);
+  assert.equal(kk.calls[0].contentType, "application/json");
+  assert.equal(kk.calls[0].accept, "application/json");
+  const sent = JSON.parse(kk.calls[0].body);
+  // Same names, same string values, nothing added or dropped.
+  assert.deepEqual(sent, Object.fromEntries(new URLSearchParams(new URLSearchParams(cb).toString())));
+  for (const v of Object.values(sent)) assert.equal(typeof v, "string");
+  // The receiver can still recompute ap_SecureHash from the JSON values.
+  assert.equal(sent.ap_SecureHash, crc([sent.orderid, sent.ap_transactionid, sent.amount,
+    sent.transaction_status, sent.message, M2.AIRPAY_MID_2, M2.AIRPAY_USERNAME_2]));
+  assert.ok(!kk.calls[0].body.includes(M2.AIRPAY_PASSWORD_2) && !kk.calls[0].body.includes(M2.AIRPAY_API_KEY_2),
+    "no gateway credentials in the payload");
+});
+
+test("json mode, JSON callback: original bytes, JSON headers", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  const cb = callback({ orderid: "KKC-json-json" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const raw = JSON.stringify({ ...cb, amount_num: 849 }, null, 1);
+  const { res } = await postJson(null, raw);
+  assert.equal(res.status, 200);
+  assert.equal(kk.calls[0].body, raw, "types and formatting untouched");
+  assert.equal(kk.calls[0].contentType, "application/json");
+  assert.equal(kk.calls[0].accept, "application/json");
+});
+
+test("json mode keeps the guards: bad signature and unconfirmed success are not forwarded", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  const bad = { ...callback({ orderid: "KKC-json-bad" }), ap_SecureHash: "1" };
+  assert.equal((await postServerForm(bad)).res.status, 400);
+  const pending = callback({ orderid: "KKC-json-pend" });
+  verifyBook.set(pending.ap_transactionid, recordFor(pending, { transaction_status: "211" }));
+  assert.equal((await postServerForm(pending)).res.status, 503);
+  assert.equal(kk.calls.length, 0);
+});
+
+test("json mode: browser return still redirects the customer", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postForm(cb);
+  assert.equal(res.status, 303);
+  assert.match(res.headers.get("location"), /returnStatus=success/);
+  assert.equal(kk.calls[0].contentType, "application/json");
+});
+
+test("unknown format value falls back to raw", () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "xml";
+  assert.equal(forwardFormat(), "raw");
+  const r = buildKkchatRequest({ format: forwardFormat(), rawBody: "a=1", contentType: "application/x-www-form-urlencoded" });
+  assert.deepEqual(r.headers, { "Content-Type": "application/x-www-form-urlencoded" });
+  assert.equal(r.body, "a=1");
+});
+
+test("ack rule parsing: unset or malformed means no rule", () => {
+  assert.equal(ackRule(), null);
+  for (const bad of ["status", "=ok", "status=", " = | "]) {
+    process.env.AIRPAY2_KKCHAT_ACK = bad;
+    assert.equal(ackRule(), null, bad);
+  }
+  process.env.AIRPAY2_KKCHAT_ACK = " status = success | ok ";
+  assert.deepEqual(ackRule(), { field: "status", values: ["success", "ok"] });
+});
+
+test("KKChat JSON success acknowledgement is confirmed", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb = callback({ orderid: "KKC-ack-ok" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = jsonReply({ status: "success" });
+  let res;
+  const [s] = summaries(await captureLogs(async () => { ({ res } = await postServerForm(cb)); }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(s.forwarding, {
+    destination: "kkchat", status: "delivered",
+    request_format: "json", request_content_type: "application/json",
+    http_status: 200, response_content_type: "application/json",
+    response_kind: "json", response_json: "parsed",
+    acknowledgement: "confirmed", attempts: 1,
+  });
+});
+
+test("KKChat HTTP 200 with HTML: never confirmed", async () => {
+  const cb = callback({ orderid: "KKC-html" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = HTML_200;
+  // No contract configured: transport delivery as before, flagged unconfirmed.
+  const lines = await captureLogs(() => postServerForm(cb));
+  const [s] = summaries(lines);
+  assert.equal(s.forwarding.status, "delivered");
+  assert.equal(s.forwarding.response_kind, "html");
+  assert.equal(s.forwarding.acknowledgement, "unconfirmed");
+  assert.ok(lines.some((l) => l.startsWith("[airpay2 forward] 2xx with an HTML body")));
+
+  // Contract configured: an HTML 200 fails the delivery, without in-request retry.
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb2 = callback({ orderid: "KKC-html-2" });
+  verifyBook.set(cb2.ap_transactionid, recordFor(cb2));
+  kk.calls.length = 0;
+  let res;
+  const [s2] = summaries(await captureLogs(async () => { ({ res } = await postServerForm(cb2)); }));
+  assert.equal(res.status, 502);
+  assert.equal(kk.calls.length, 1);
+  assert.equal(s2.forwarding.status, "failed");
+  assert.equal(s2.forwarding.error, "ack_unconfirmed");
+});
+
+test("KKChat malformed JSON is handled safely and not confirmed", async () => {
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb = callback({ orderid: "KKC-malformed" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => new Response('{"status":"succ', { status: 200, headers: { "Content-Type": "application/json" } });
+  let res;
+  const [s] = summaries(await captureLogs(async () => { ({ res } = await postJson(cb)); }));
+  assert.equal(res.status, 502);
+  assert.equal(s.forwarding.response_json, "malformed");
+  assert.equal(s.forwarding.acknowledgement, "unconfirmed");
+});
+
+test("KKChat JSON application rejection is reported, not retried, and re-deliverable", async () => {
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb = callback({ orderid: "KKC-reject" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = jsonReply({ status: "failed", detail: "order 4242 unknown to KKChat" });
+  let res;
+  const lines = await captureLogs(async () => { ({ res } = await postJson(cb)); });
+  const [s] = summaries(lines);
+  assert.equal(res.status, 502, "not acknowledged to AirPay");
+  assert.equal(kk.calls.length, 1, "application rejection is not retried in-request");
+  assert.equal(s.forwarding.acknowledgement, "rejected");
+  assert.equal(s.forwarding.error, "ack_rejected");
+  assert.ok(!lines.join("\n").includes("order 4242 unknown"), "response body is never logged");
+
+  // Not remembered as delivered: a re-send is tried again.
+  kk.respond = jsonReply({ status: "success" });
+  assert.equal((await postJson(cb)).res.status, 200);
+  assert.equal(kk.calls.length, 2);
+});
+
+test("KKChat HTTP 500 keeps the existing retry with a contract configured", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb = callback({ orderid: "KKC-500" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = jsonReply({ status: "error" }, 500);
+  assert.equal((await postJson(cb)).res.status, 502);
+  assert.equal(kk.calls.length, 2);
+});
+
+test("json mode: KKChat timeout is handled, bounded and reported", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  kk.respond = (init) => new Promise((_r, reject) => {
+    init.signal.addEventListener("abort", () => reject(init.signal.reason));
+  });
+  const r = await forwardAirpay2Callback({ rawBody: "a=1", contentType: "application/x-www-form-urlencoded",
+    fields: { a: "1" }, dedupKey: "k-json-timeout", timeoutMs: 50, attempts: 2 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "timeout");
+  assert.equal(r.attempts, 2);
+  assert.equal(r.acknowledgement, "unconfirmed");
+});
+
+test("json mode duplicates: one KKChat delivery; the duplicate reports the remembered ack", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "json";
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const cb = callback({ orderid: "KKC-dup-json" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = jsonReply({ status: "success" });
+  await postServerForm(cb);
+  const [s] = summaries(await captureLogs(() => postJson(cb)));
+  assert.equal(kk.calls.length, 1);
+  assert.equal(s.forwarding.status, "duplicate");
+  assert.equal(s.forwarding.acknowledgement, "confirmed");
+});
+
+test("response reading is bounded; an oversized body is never confirmed", async () => {
+  process.env.AIRPAY2_KKCHAT_ACK = "status=success";
+  const big = JSON.stringify({ status: "success", pad: "x".repeat(1_000_000) });
+  kk.respond = () => new Response(big, { status: 200, headers: { "Content-Type": "application/json" } });
+  const r = await forwardAirpay2Callback({ rawBody: "x", contentType: "application/json", dedupKey: "k-big", attempts: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.response.json, "malformed");
+  assert.equal(r.acknowledgement, "unconfirmed");
+});
+
+test("inspectResponse classifies bodies; without a contract nothing is confirmed", () => {
+  const ins = (contentType, text, rule = null) => inspectResponse({ contentType, text, truncated: false }, rule);
+  assert.deepEqual(ins("application/json", '{"status":"success"}'), { kind: "json", json: "parsed", acknowledgement: "unconfirmed" });
+  assert.equal(ins("text/html", "<html></html>").kind, "html");
+  assert.equal(ins("", "<!DOCTYPE html><p>").kind, "html");
+  assert.equal(ins("text/plain", "OK").kind, "text");
+  assert.equal(ins("application/json", "").kind, "empty");
+  const rule = { field: "status", values: ["success", "200"] };
+  assert.equal(ins("application/json", '{"status":200}', rule).acknowledgement, "confirmed", "values compare as strings");
+  assert.equal(ins("application/json", '{"ok":true}', rule).acknowledgement, "unconfirmed");
+  assert.equal(ins("application/json", '["success"]', rule).acknowledgement, "unconfirmed");
+  assert.equal(ins("application/json", '{"status":"fail"}', rule).acknowledgement, "rejected");
 });

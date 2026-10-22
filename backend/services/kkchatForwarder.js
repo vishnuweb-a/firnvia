@@ -1,9 +1,25 @@
 // Backend-to-backend relay of AirPay 2 callbacks to KKChat.
 //
 // The destination is a constant. Nothing from the request can change it.
-// The body is the callback's ORIGINAL raw bytes with its ORIGINAL content type,
-// so KKChat receives exactly what AirPay sent (transaction ids, merchant id,
-// status, amount and ap_SecureHash untouched) and can verify it independently.
+//
+// Request format (AIRPAY2_KKCHAT_FORMAT, read per call):
+//   "raw"  (default) the callback's ORIGINAL raw bytes with its ORIGINAL content
+//          type — exactly what AirPay sent. Production behaviour before the JSON
+//          change; kept as default until KKChat confirms its contract.
+//   "json" Content-Type/Accept: application/json. A JSON callback is sent as its
+//          original bytes (types and formatting untouched); a form callback is
+//          sent as a JSON object of its original field names and string values.
+//          Nothing is added, renamed or dropped. ap_SecureHash is a CRC32 over
+//          field VALUES (see services/airpay2.js), so it stays verifiable.
+//
+// Acknowledgement (AIRPAY2_KKCHAT_ACK, read per call), "field=value[|value…]":
+//   unset  a 2xx is a delivery, as before, but is reported "unconfirmed": an
+//          HTTP status alone does not prove KKChat processed anything.
+//   set    a 2xx is a delivery only if the JSON response has `field` equal to
+//          one of the values ("confirmed"). The field with another value is
+//          "rejected" (not retried); HTML, malformed JSON or a missing field is
+//          "unconfirmed" (not retried). Both fail the delivery.
+// No schema is assumed here: the field and values come from KKChat's contract.
 //
 // Delivery is best-effort. There is no durable queue (the app has no database):
 // retries are bounded and happen inside the current request only, and the
@@ -19,32 +35,131 @@ const DEFAULT_TIMEOUT_MS = 4000;
 const DEFAULT_ATTEMPTS   = 2;
 const RETRY_DELAY_MS     = 300;
 const DEDUP_LIMIT        = 5000;
+const MAX_RESPONSE_BYTES = 8192;
 
-// key -> { at } for deliveries KKChat accepted; key -> Promise while in flight.
+// key -> { at, acknowledgement } for deliveries KKChat accepted; key -> Promise while in flight.
 const delivered = new Map();
 const inFlight  = new Map();
 
-function remember(key) {
-  delivered.set(key, { at: Date.now() });
+function remember(key, acknowledgement) {
+  delivered.set(key, { at: Date.now(), acknowledgement });
   // Bounded: evict oldest (Map preserves insertion order).
   while (delivered.size > DEDUP_LIMIT) delivered.delete(delivered.keys().next().value);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function attemptOnce(rawBody, contentType, timeoutMs) {
+/** "raw" | "json". Anything unrecognised falls back to "raw". */
+export function forwardFormat() {
+  return (process.env.AIRPAY2_KKCHAT_FORMAT || "").trim().toLowerCase() === "json" ? "json" : "raw";
+}
+
+/** Parsed AIRPAY2_KKCHAT_ACK, or null when unset / malformed. */
+export function ackRule() {
+  const spec = (process.env.AIRPAY2_KKCHAT_ACK || "").trim();
+  const eq = spec.indexOf("=");
+  if (eq <= 0) return null;
+  const field = spec.slice(0, eq).trim();
+  const values = spec.slice(eq + 1).split("|").map((v) => v.trim()).filter(Boolean);
+  return field && values.length ? { field, values } : null;
+}
+
+/**
+ * The HTTP request KKChat receives for one callback.
+ *
+ * @param {object} p
+ * @param {"raw"|"json"}  p.format
+ * @param {Buffer|string} p.rawBody      exact bytes received from AirPay
+ * @param {string}        p.contentType  the callback's Content-Type header
+ * @param {object}        [p.fields]     the parsed callback (what was verified)
+ * @returns {{format:string, headers:object, body:Buffer|string}}
+ */
+export function buildKkchatRequest({ format, rawBody, contentType, fields }) {
+  if (format !== "json") return { format: "raw", headers: { "Content-Type": contentType }, body: rawBody };
+  const headers = { "Content-Type": "application/json", Accept: "application/json" };
+  // Already JSON: the original bytes are the most faithful JSON there is.
+  if (/json/i.test(contentType)) return { format: "json", headers, body: rawBody };
+  const obj = {};
+  for (const [k, v] of Object.entries(fields || {})) obj[k] = v === undefined || v === null ? "" : String(v);
+  return { format: "json", headers, body: JSON.stringify(obj) };
+}
+
+// Read at most `limit` bytes of the response, then stop the download.
+async function readBounded(res, limit) {
+  if (!res.body) return { text: "", truncated: false };
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0, truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+      if (size > limit) { truncated = true; break; }
+    }
+  } finally {
+    if (truncated) reader.cancel().catch(() => {});
+  }
+  return { text: Buffer.concat(chunks).subarray(0, limit).toString("utf8"), truncated };
+}
+
+/**
+ * Classify a KKChat response. Exported for tests.
+ * @returns {{kind:string, json:string, acknowledgement:string, ack_value?:string}}
+ *   kind: "json" | "html" | "text" | "empty"
+ *   json: "parsed" | "malformed" | "n/a"
+ *   acknowledgement: "confirmed" | "rejected" | "unconfirmed"
+ */
+export function inspectResponse({ contentType, text, truncated }, rule) {
+  const trimmed = text.trim();
+  const ct = String(contentType || "");
+  let kind;
+  if (!trimmed) kind = "empty";
+  else if (/json/i.test(ct) || /^[{[]/.test(trimmed)) kind = "json";
+  else if (/html/i.test(ct) || /^<(!doctype|html)/i.test(trimmed)) kind = "html";
+  else kind = "text";
+
+  let parsed, json = "n/a";
+  if (kind === "json") {
+    try { parsed = truncated ? undefined : JSON.parse(trimmed); } catch { /* malformed */ }
+    json = parsed !== undefined ? "parsed" : "malformed";
+  }
+
+  if (!rule) return { kind, json, acknowledgement: "unconfirmed" };
+  const has = parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+    Object.prototype.hasOwnProperty.call(parsed, rule.field);
+  if (!has) return { kind, json, acknowledgement: "unconfirmed" };
+  const value = String(parsed[rule.field]);
+  // The value is a status word from KKChat, never payment data: bounded and logged.
+  return {
+    kind, json,
+    acknowledgement: rule.values.includes(value) ? "confirmed" : "rejected",
+    ack_value: value.slice(0, 40),
+  };
+}
+
+async function attemptOnce(request, timeoutMs, rule) {
   try {
     const res = await fetch(KKCHAT_AIRPAY2_CALLBACK_URL, {
       method: "POST",
-      headers: { "Content-Type": contentType },
-      body: rawBody,
+      headers: request.headers,
+      body: request.body,
       redirect: "manual", // a redirect is not a delivery
       signal: AbortSignal.timeout(timeoutMs),
     });
-    // Drain so the connection can be reused; the body is not logged.
-    await res.arrayBuffer().catch(() => {});
-    if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status };
-    return { ok: false, status: res.status, retryable: res.status >= 500 || res.status === 429 };
+    const contentType = res.headers.get("content-type") || "";
+    // The body is inspected but never logged: it may echo payment data.
+    const read = await readBounded(res, MAX_RESPONSE_BYTES).catch(() => ({ text: "", truncated: false }));
+    const response = { content_type: contentType.slice(0, 100), ...inspectResponse({ contentType, ...read }, rule) };
+
+    if (res.status < 200 || res.status >= 300)
+      return { ok: false, status: res.status, response, retryable: res.status >= 500 || res.status === 429 };
+    // No contract configured: a 2xx stays a delivery, reported as unconfirmed.
+    if (!rule || response.acknowledgement === "confirmed")
+      return { ok: true, status: res.status, response };
+    // Contract configured but not met. Deterministic, so not retried here.
+    return { ok: false, status: res.status, response, error: `ack_${response.acknowledgement}`, retryable: false };
   } catch (err) {
     const timeout = err?.name === "TimeoutError" || err?.name === "AbortError";
     return { ok: false, error: timeout ? "timeout" : "network", retryable: true };
@@ -57,17 +172,20 @@ async function attemptOnce(rawBody, contentType, timeoutMs) {
  * @param {object} p
  * @param {Buffer|string} p.rawBody      exact bytes received from AirPay
  * @param {string}        p.contentType  the callback's Content-Type header
+ * @param {object}        [p.fields]     the parsed, verified callback (for "json")
  * @param {string}        p.dedupKey     identity of this event (txn + status)
  * @param {string}        [p.logRef]     non-sensitive id for logs (AirPay txn id)
- * @returns {Promise<{ok:boolean, duplicate?:boolean, status?:number, error?:string, attempts?:number}>}
+ * @returns {Promise<{ok:boolean, duplicate?:boolean, status?:number, error?:string,
+ *   attempts?:number, request_format?:string, request_content_type?:string,
+ *   response?:object, acknowledgement?:string}>}
  */
 export async function forwardAirpay2Callback({
-  rawBody, contentType, dedupKey, logRef = "",
+  rawBody, contentType, fields, dedupKey, logRef = "",
   timeoutMs = DEFAULT_TIMEOUT_MS, attempts = DEFAULT_ATTEMPTS,
 }) {
   if (dedupKey && delivered.has(dedupKey)) {
     console.log("[airpay2 forward] duplicate, already delivered:", logRef);
-    return { ok: true, duplicate: true };
+    return { ok: true, duplicate: true, acknowledgement: delivered.get(dedupKey).acknowledgement };
   }
   // A browser return and an IPN for the same event can race: share one delivery.
   if (dedupKey && inFlight.has(dedupKey)) {
@@ -75,26 +193,37 @@ export async function forwardAirpay2Callback({
     return { ...shared, duplicate: true };
   }
 
+  const request = buildKkchatRequest({ format: forwardFormat(), rawBody, contentType, fields });
+  const rule = ackRule();
+
   const run = (async () => {
     let last;
     for (let i = 1; i <= attempts; i++) {
-      last = await attemptOnce(rawBody, contentType, timeoutMs);
+      last = await attemptOnce(request, timeoutMs, rule);
       if (last.ok || !last.retryable || i === attempts) {
         last.attempts = i;
         break;
       }
       await sleep(RETRY_DELAY_MS * i);
     }
+    const acknowledgement = last.response?.acknowledgement || "unconfirmed";
+    const log = {
+      ref: logRef, request_format: request.format, status: last.status,
+      error: last.error, attempts: last.attempts, response: last.response,
+    };
     if (last.ok) {
-      if (dedupKey) remember(dedupKey);
-      console.log("[airpay2 forward] delivered:", { ref: logRef, status: last.status, attempts: last.attempts });
+      if (dedupKey) remember(dedupKey, acknowledgement);
+      // An HTML 2xx is most likely a fallback page, not KKChat's handler.
+      if (last.response?.kind === "html") console.warn("[airpay2 forward] 2xx with an HTML body:", log);
+      else console.log("[airpay2 forward] delivered:", log);
     } else {
-      console.error("[airpay2 forward] failed:", {
-        ref: logRef, status: last.status, error: last.error, attempts: last.attempts,
-      });
+      console.error("[airpay2 forward] failed:", log);
     }
     const { retryable, ...result } = last;
-    return result;
+    return {
+      ...result, acknowledgement,
+      request_format: request.format, request_content_type: request.headers["Content-Type"],
+    };
   })();
 
   if (dedupKey) inFlight.set(dedupKey, run);
