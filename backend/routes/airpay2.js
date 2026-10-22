@@ -314,22 +314,35 @@ async function handleAirpay2Callback(req, res) {
     dedupKey: `${cb.apTxnId}:${cb.txnStatus}`,
     logRef: cb.apTxnId,
   });
-  // `acknowledgement` is the only field that speaks for KKChat's processing;
-  // "unconfirmed" means it was not established, whatever the HTTP status.
+  // Four separate facts: transport_delivered (KKChat answered 2xx),
+  // response_valid (JSON as contracted), acknowledgement (KKChat confirmed
+  // processing; "unconfirmed" = not established, whatever the HTTP status) and
+  // payment_recorded (never known to Firvanra).
+  const r = fwd.response;
   logSummary({
     forwarding: {
       destination: "kkchat",
       status: fwd.duplicate ? "duplicate" : fwd.ok ? "delivered" : "failed",
       ...(fwd.request_format && { request_format: fwd.request_format }),
       ...(fwd.request_content_type && { request_content_type: fwd.request_content_type }),
+      transport_delivered: Boolean(fwd.transport_delivered),
       ...(fwd.status !== undefined && { http_status: fwd.status }),
-      ...(fwd.response && {
-        response_content_type: fwd.response.content_type,
-        response_kind: fwd.response.kind,
-        response_json: fwd.response.json,
-        response_content_type_json: fwd.response.content_type_json,
+      ...(r && {
+        response_content_type: r.content_type,
+        response_kind: r.kind,
+        response_json: r.json,
+        response_content_type_json: r.content_type_json,
+        response_valid: r.json === "parsed" && r.content_type_json,
+        ...(r.issue && { response_issue: r.issue }),
+        response_charset: r.charset,
+        response_bytes: r.bytes,
+        response_truncated: r.truncated,
+        response_shape: r.shape,
+        ...(r.word && { response_word: r.word }),
+        ...(r.server && { response_server: r.server }),
       }),
       acknowledgement: fwd.acknowledgement || "unconfirmed",
+      payment_recorded: "unconfirmed",
       ...(fwd.attempts !== undefined && { attempts: fwd.attempts }),
       ...(fwd.error && { error: fwd.error }),
     },
