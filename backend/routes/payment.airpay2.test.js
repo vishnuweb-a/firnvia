@@ -981,3 +981,89 @@ test("firvanra.online proxies the callback path to the API, before the SPA fallb
   assert.ok(be.rewrites.some((r) => r.source === "/(.*)" && r.destination === "/server.js"),
     "API project hands every path to Express");
 });
+
+// The request as Vercel's external rewrite delivers it: Host is the API domain,
+// the public domain survives only in X-Forwarded-Host, and any query string is
+// passed through. node:http is used because fetch cannot set Host.
+async function postProxied({ body, contentType, query = "", headers = {} }) {
+  const http = await import("node:http");
+  const { port } = server.address();
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: "127.0.0.1", port, method: "POST", path: `${CALLBACK_PATH}${query}`,
+      headers: {
+        Host: "api.firvanra.online",
+        "X-Forwarded-Host": "firvanra.online",
+        "X-Forwarded-Proto": "https",
+        "Content-Type": contentType,
+        "Content-Length": Buffer.byteLength(body),
+        ...headers,
+      },
+    }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { text += c; });
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+test("proxied form IPN (Host: api.firvanra.online, query string): settled, forwarded verbatim", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const body = new URLSearchParams(cb).toString();
+
+  const res = await postProxied({
+    body, contentType: "application/x-www-form-urlencoded", query: "?src=airpay&x=1",
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.text), { received: true, forwarded: true, duplicate: false });
+  assert.equal(orders.get(order.id).status, "paid");
+  assert.equal(kk.calls.length, 1);
+  assert.equal(kk.calls[0].url, KKCHAT, "destination not steered by Host / X-Forwarded-Host");
+  assert.equal(kk.calls[0].body, body, "body byte-for-byte; the query string is not mixed in");
+});
+
+test("proxied JSON IPN: processed and forwarded with the original bytes", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const body = JSON.stringify(cb, null, 2);
+
+  const res = await postProxied({ body, contentType: "application/json", query: "?src=airpay" });
+  assert.equal(res.status, 200);
+  assert.equal(orders.get(order.id).status, "paid");
+  assert.equal(kk.calls[0].body, body);
+  assert.equal(kk.calls[0].contentType, "application/json");
+});
+
+test("proxied browser return: customer sent to FRONTEND_URL, not the API Host", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+
+  const res = await postProxied({
+    body: new URLSearchParams(cb).toString(),
+    contentType: "application/x-www-form-urlencoded",
+    headers: BROWSER_HEADERS,
+  });
+  assert.equal(res.status, 303);
+  assert.equal(res.headers.location,
+    `https://firvanra.online/order/${order.id}?status=pending&gateway=airpay_2&returnStatus=success`);
+});
+
+test("proxied forged callback: rejected, nothing verified or forwarded", async () => {
+  const order = localOrder();
+  const cb = { ...callback({ orderid: order.id }), ap_SecureHash: "123" };
+
+  const res = await postProxied({
+    body: new URLSearchParams(cb).toString(), contentType: "application/x-www-form-urlencoded",
+  });
+  assert.equal(res.status, 400);
+  assert.equal(orders.get(order.id).status, "pending");
+  assert.equal(verifyCalls().length, 0);
+  assert.equal(kk.calls.length, 0);
+});
