@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test services/payu.test.js services/sabpaisa.test.js routes/payment.payu.test.js routes/payment.sabpaisa.test.js routes/payment.sabpaisa.noenquiry.test.js routes/payment.airpay.production.test.js routes/payment.preflight.e2e.test.js routes/payment.airpay2.test.js services/kkchatDiagnostics.test.js server.health.test.js"
+    "test": "node --test services/payu.test.js services/sabpaisa.test.js routes/payment.payu.test.js routes/payment.sabpaisa.test.js routes/payment.sabpaisa.noenquiry.test.js routes/payment.airpay.production.test.js routes/payment.preflight.e2e.test.js routes/payment.airpay2.test.js services/kkchatDiagnostics.test.js services/kkchatFieldAdapter.test.js server.health.test.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

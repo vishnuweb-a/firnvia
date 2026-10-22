@@ -336,6 +336,7 @@ async function handleAirpay2Callback(req, res) {
       status: fwd.duplicate ? "duplicate" : fwd.ok ? "delivered" : "failed",
       ...(fwd.request_format && { request_format: fwd.request_format }),
       ...(fwd.request_content_type && { request_content_type: fwd.request_content_type }),
+      ...(fwd.field_case && { field_case: fwd.field_case }),
       transport_delivered: Boolean(fwd.transport_delivered),
       ...(fwd.status !== undefined && { http_status: fwd.status }),
       ...(r && {

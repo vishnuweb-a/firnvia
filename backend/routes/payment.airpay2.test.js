@@ -114,6 +114,7 @@ beforeEach(() => {
   _resetForwarderState();
   Object.assign(process.env, M1, M2);
   delete process.env.AIRPAY2_KKCHAT_FORMAT;
+  delete process.env.AIRPAY2_KKCHAT_FIELD_CASE;
   delete process.env.AIRPAY2_KKCHAT_ACK;
   delete process.env.AIRPAY2_KKCHAT_STRICT_RESPONSE;
   for (const k of ["AIRPAY2_KKCHAT_DEBUG", "AIRPAY2_KKCHAT_DEBUG_UNTIL",
@@ -968,7 +969,7 @@ test("structured summary: unknown local order, verified, delivered; no secrets",
     verification: "verified", outcome: "paid", local_order: "unknown",
     forwarding: {
       destination: "kkchat", status: "delivered",
-      request_format: "json", request_content_type: "application/json",
+      request_format: "json", request_content_type: "application/json", field_case: "passthrough",
       transport_delivered: true,
       http_status: 200, response_content_type: "application/json",
       response_kind: "json", response_json: "parsed", response_content_type_json: true,
@@ -1208,7 +1209,7 @@ test("KKChat JSON success acknowledgement is confirmed", async () => {
   delete s.forwarding.relay_ids;
   assert.deepEqual(s.forwarding, {
     destination: "kkchat", status: "delivered",
-    request_format: "json", request_content_type: "application/json",
+    request_format: "json", request_content_type: "application/json", field_case: "passthrough",
     transport_delivered: true,
     http_status: 200, response_content_type: "application/json",
     response_kind: "json", response_json: "parsed", response_content_type_json: true,
@@ -1966,4 +1967,255 @@ test("an unrecognised (e.g. encrypted envelope) callback: 400, field NAMES logge
   assert.deepEqual(detail.field_names, ["merchant_id", "response"]);
   assert.equal(detail.envelope_suspected, true);
   assert.ok(!lines.join("\n").includes("ENVELOPECIPHERTEXT"));
+});
+
+// ═══════════ Opt-in uppercase field names (AIRPAY2_KKCHAT_FIELD_CASE) ═══════
+// Outbound-only. KKChat accepted an uppercase JSON body from Postman (dummy
+// values); that is not a confirmed receiver contract, so the flag is off by
+// default. Inbound CRC32 + Verify API run unchanged before any renaming.
+
+// Independent oracle for the expected outgoing names (same aliases as the adapter).
+const UPPER = {
+  merchant_id: "MERCID", MERCHANTID: "MERCID", mercid: "MERCID", orderid: "TRANSACTIONID",
+  ap_transactionid: "APTRANSACTIONID", amount: "AMOUNT", transaction_status: "TRANSACTIONSTATUS",
+  transaction_payment_status: "TRANSACTIONPAYMENTSTATUS", message: "MESSAGE",
+  currency_code: "CURRENCYCODE", chmod: "CHMOD", customer_vpa: "CUSTOMERVPA",
+  ap_securehash: "ap_SecureHash", AP_SECUREHASH: "ap_SecureHash",
+};
+const toUpper = (obj) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [UPPER[k] ?? k, v]));
+const enableUppercase = () => { process.env.AIRPAY2_KKCHAT_FIELD_CASE = "uppercase"; };
+
+test("uppercase: verified lowercase FORM callback → uppercase JSON, exact URL/headers, hash unchanged", async () => {
+  enableUppercase();
+  const order = localOrder();
+  const cb = callback({ orderid: order.id, udf1: "keep-me" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  let res;
+  const lines = await captureLogs(async () => { ({ res } = await postServerForm(cb)); });
+  assert.equal(res.status, 200);
+  assert.equal(verifyCalls().length, 1, "Verify API ran before forwarding");
+  assert.equal(orders.get(order.id).status, "paid");
+
+  assert.equal(kk.calls.length, 1);
+  const c = kk.calls[0];
+  assert.equal(c.url, KKCHAT);
+  assert.equal(c.method, "POST");
+  assert.equal(c.contentType, "application/json");
+  assert.equal(c.accept, "application/json");
+  assert.equal(c.userAgent, "Firvanra-AirPay2-Relay/1.0 (+https://firvanra.online)");
+  assert.match(c.relayId, RELAY_ID);
+  assert.deepEqual(c.headerNames.sort(), ["Accept", "Content-Type", "User-Agent", "X-Firvanra-Relay-Id"]);
+  assert.equal(c.body, JSON.stringify(toUpper(cb)), "renamed keys, same order, same string values");
+  const sent = JSON.parse(c.body);
+  assert.equal(sent.MERCID, M2.AIRPAY_MID_2);
+  assert.equal(sent.TRANSACTIONID, cb.orderid);
+  assert.equal(sent.APTRANSACTIONID, cb.ap_transactionid);
+  assert.equal(sent.AMOUNT, "849.00");
+  assert.equal(sent.ap_SecureHash, cb.ap_SecureHash, "hash value passed through unchanged");
+  assert.equal(sent.udf1, "keep-me", "unknown field kept");
+  for (const k of ["orderid", "merchant_id", "ap_transactionid", "amount"]) assert.equal(Object.hasOwn(sent, k), false);
+
+  const [s] = summaries(lines);
+  assert.equal(s.forwarding.status, "delivered");
+  assert.equal(s.forwarding.field_case, "uppercase");
+  assert.ok(!lines.join("\n").includes(cb.ap_SecureHash), "hash never logged");
+});
+
+test("uppercase: verified lowercase JSON callback → uppercase JSON; nested, unknown and big numbers exact", async () => {
+  enableUppercase();
+  const cb = callback({ orderid: "KKC-up-json", udf2: "x" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const extra = { ...cb, risk: { score: 12, orderid: "nested-untouched" } };
+  const tail = ',"ref_no":12345678901234567890,"fee":1.50}';
+  const raw = JSON.stringify(extra).slice(0, -1) + tail;
+  const { res } = await postJson(null, raw);
+  assert.equal(res.status, 200);
+  assert.equal(verifyCalls().length, 1);
+  assert.equal(kk.calls[0].body, JSON.stringify(toUpper(extra)).slice(0, -1) + tail);
+});
+
+test("uppercase: an already-uppercase JSON callback is forwarded byte-for-byte", async () => {
+  enableUppercase();
+  const cb = upperCallback({ TRANSACTIONID: "KKC-up-already" });
+  verifyBook.set(cb.APTRANSACTIONID, recordFor(cb));
+  const raw = JSON.stringify(cb);
+  const { res } = await postJson(null, raw);
+  assert.equal(res.status, 200);
+  assert.equal(kk.calls[0].body, raw);
+});
+
+test("uppercase: mixed aliases with equal values collapse to one field each", async () => {
+  enableUppercase();
+  const base = callback({ orderid: "KKC-up-mixed" });
+  const cb = { ...base, TRANSACTIONID: base.orderid, MERCID: base.merchant_id };
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postJson(cb);
+  assert.equal(res.status, 200);
+  assert.equal(kk.calls[0].body, JSON.stringify(toUpper(base)), "no duplicated keys");
+});
+
+test("uppercase: conflicting aliases fail closed AFTER verification, before any KKChat POST", async () => {
+  enableUppercase();
+  for (const [name, conflict] of [
+    ["orderid", { TRANSACTIONID: "DIFFERENT-ORDER-VALUE" }],
+    ["hash", { ap_securehash: "999999999" }],
+  ]) {
+    kk.calls.length = 0; airpayCalls.length = 0;
+    const order = localOrder();
+    const cb = { ...callback({ orderid: order.id }), ...conflict };
+    verifyBook.set(cb.ap_transactionid, recordFor(cb));
+    let res;
+    const lines = await captureLogs(async () => { ({ res } = await postJson(cb)); });
+    assert.equal(res.status, 502, `${name}: not acknowledged, so a re-send can be retried`);
+    assert.equal(verifyCalls().length, 1, `${name}: inbound checks still ran first`);
+    assert.equal(kk.calls.length, 0, `${name}: nothing sent`);
+    assert.equal(orders.get(order.id).status, "paid", `${name}: verified local settlement kept`);
+    const [s] = summaries(lines);
+    assert.equal(s.forwarding.status, "failed");
+    assert.equal(s.forwarding.error, "field_alias_conflict");
+    assert.equal(s.forwarding.attempts, 0);
+    assert.equal(s.forwarding.transport_delivered, false);
+    const all = lines.join("\n");
+    for (const v of Object.values(conflict)) assert.ok(!all.includes(v), `${name}: disputed value not logged`);
+    assert.ok(!all.includes(cb.ap_SecureHash));
+  }
+});
+
+test("uppercase rollback: a conflict that failed is delivered unchanged once the flag is removed", async () => {
+  enableUppercase();
+  const cb = { ...callback({ orderid: "KKC-up-rollback" }), TRANSACTIONID: "OTHER" };
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const raw = JSON.stringify(cb);
+  assert.equal((await postJson(null, raw)).res.status, 502);
+  assert.equal(kk.calls.length, 0);
+  delete process.env.AIRPAY2_KKCHAT_FIELD_CASE;
+  assert.equal((await postJson(null, raw)).res.status, 200, "failure was not remembered as delivered");
+  assert.equal(kk.calls[0].body, raw);
+});
+
+test("flag absent (or unrecognised): exactly the previous request bodies", async () => {
+  for (const value of [undefined, "passthrough", "garbage"]) {
+    kk.calls.length = 0;
+    if (value === undefined) delete process.env.AIRPAY2_KKCHAT_FIELD_CASE;
+    else process.env.AIRPAY2_KKCHAT_FIELD_CASE = value;
+    const f = callback({ orderid: `KKC-flagoff-f-${value}` });
+    verifyBook.set(f.ap_transactionid, recordFor(f));
+    let body;
+    const lines = await captureLogs(async () => { ({ body } = await postServerForm(f)); });
+    assert.equal(kk.calls[0].body, formAsJson(body), `${value}: form → same-name JSON`);
+    assert.equal(summaries(lines)[0].forwarding.field_case, "passthrough");
+    const j = callback({ orderid: `KKC-flagoff-j-${value}` });
+    verifyBook.set(j.ap_transactionid, recordFor(j));
+    const raw = JSON.stringify(j);
+    await postJson(null, raw);
+    assert.equal(kk.calls[1].body, raw, `${value}: JSON → original bytes`);
+  }
+});
+
+test("uppercase flag + form/raw rollback: original raw bytes and content type, never renamed", async () => {
+  enableUppercase();
+  for (const fmt of ["form", "raw"]) {
+    kk.calls.length = 0;
+    process.env.AIRPAY2_KKCHAT_FORMAT = fmt;
+    const cb = callback({ orderid: `KKC-up-${fmt}` });
+    verifyBook.set(cb.ap_transactionid, recordFor(cb));
+    let body;
+    const lines = await captureLogs(async () => { ({ body } = await postServerForm(cb)); });
+    assert.equal(kk.calls[0].contentType, "application/x-www-form-urlencoded");
+    assert.equal(kk.calls[0].body, body, `${fmt}: the exact bytes AirPay sent`);
+    const s = summaries(lines)[0];
+    assert.equal(s.forwarding.request_format, "raw");
+    assert.equal(s.forwarding.field_case, "passthrough", "reports what was applied");
+  }
+});
+
+test("uppercase keeps every inbound guard: bad hash, wrong merchant, unverifiable, unconfirmed", async () => {
+  enableUppercase();
+  const cases = [
+    ["invalid hash", () => { const cb = callback({ orderid: "KKC-up-g1" }); cb.ap_SecureHash = "1"; return [cb, 400, 0]; }],
+    ["wrong merchant", () => [callback({ orderid: "KKC-up-g2", merchant_id: "999999" }), 400, 0]],
+    ["merchant-1 signed", () => [callback({ orderid: "KKC-up-g3", mid: M1.AIRPAY_MERCHANT_ID,
+      username: M1.AIRPAY_USERNAME, merchant_id: M1.AIRPAY_MERCHANT_ID }), 400, 0]],
+    ["verify unavailable", () => {
+      const cb = callback({ orderid: "KKC-up-g4" });
+      verifyBook.set(cb.ap_transactionid, () => { throw new Error("down"); });
+      return [cb, 503, 1];
+    }],
+    ["verify has no record", () => [callback({ orderid: "KKC-up-g5" }), 503, 1]],
+    ["success not confirmed", () => {
+      const cb = callback({ orderid: "KKC-up-g6" });
+      verifyBook.set(cb.ap_transactionid,
+        recordFor(cb, { transaction_status: "211", transaction_payment_status: "PENDING" }));
+      return [cb, 503, 1];
+    }],
+  ];
+  for (const [name, make] of cases) {
+    const [cb, status, verifies] = make();
+    for (const post of [postJson, postServerForm]) {
+      kk.calls.length = 0; airpayCalls.length = 0;
+      assert.equal((await post(cb)).res.status, status, name);
+      assert.equal(verifyCalls().length, verifies, `${name}: verify calls`);
+      assert.equal(kk.calls.length, 0, `${name}: never forwarded`);
+    }
+  }
+});
+
+test("uppercase: unknown local order with a verified AirPay txn is forwarded; no order created", async () => {
+  enableUppercase();
+  const cb = callback({ orderid: "KKC-up-external-1" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  assert.equal((await postServerForm(cb)).res.status, 200);
+  assert.equal(orders.has(cb.orderid), false);
+  assert.equal(JSON.parse(kk.calls[0].body).TRANSACTIONID, cb.orderid);
+});
+
+test("uppercase: browser return + IPN and concurrent IPNs share one KKChat delivery", async () => {
+  enableUppercase();
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  assert.equal((await postForm(cb)).res.status, 303);
+  const dup = await postJson(cb);
+  assert.equal(dup.res.status, 200);
+  assert.equal((await dup.res.json()).duplicate, true);
+  assert.equal(kk.calls.length, 1);
+
+  const cb2 = callback({ orderid: "KKC-up-concurrent" });
+  verifyBook.set(cb2.ap_transactionid, recordFor(cb2));
+  const results = await Promise.all([postJson(cb2), postJson(cb2), postServerForm(cb2)]);
+  assert.deepEqual(results.map((r) => r.res.status), [200, 200, 200]);
+  assert.equal(kk.calls.length, 2, "one delivery for the concurrent group");
+  assert.equal(kk.calls[1].body, JSON.stringify(toUpper(cb2)));
+});
+
+test("uppercase debug: field names, byte count and SHA-256 describe the FINAL outgoing body", async () => {
+  enableUppercase();
+  const cb = callback({ orderid: "KKC-up-debug", buyer_email: "asha@example.com" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  const lines = await captureLogs(() => postServerForm(cb));
+  const [req] = debugRecords(lines);
+  const sent = kk.calls[0].body;
+  assert.equal(req.field_case, "uppercase");
+  assert.deepEqual(req.field_names, Object.keys(toUpper(cb)));
+  assert.equal(req.request_bytes, Buffer.byteLength(sent));
+  assert.equal(req.request_sha256, sha256(sent));
+  assert.notEqual(req.request_sha256, sha256(formAsJson(new URLSearchParams(cb).toString())),
+    "not the pre-mapping body");
+  assert.equal(req.request_headers["Content-Length"], String(Buffer.byteLength(sent)));
+  const all = lines.join("\n");
+  for (const secret of [cb.ap_SecureHash, "asha@example.com", M2.AIRPAY_PASSWORD_2, M2.AIRPAY_API_KEY_2])
+    assert.ok(!all.includes(secret), `logs must not contain ${secret}`);
+});
+
+test("uppercase debug: a blocked conflict is recorded as not_sent with names only", async () => {
+  enableUppercase();
+  const cb = { ...callback({ orderid: "KKC-up-debug-conflict" }), TRANSACTIONID: "SECRETOTHER" };
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  const lines = await captureLogs(() => postJson(cb));
+  assert.deepEqual(debugRecords(lines).map((r) => [r.event, r.reason]), [["not_sent", "field_alias_conflict"]]);
+  const err = lines.find((l) => l.startsWith("[airpay2 forward] not sent: outgoing field mapping failed"));
+  assert.ok(err && err.includes("orderid") && err.includes("TRANSACTIONID"));
+  assert.ok(!lines.join("\n").includes("SECRETOTHER"));
 });
