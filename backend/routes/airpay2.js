@@ -83,6 +83,7 @@ router.post("/initiate", async (req, res) => {
 
 // ── Callback / IPN ──────────────────────────────────────────────────────────
 
+/** @returns {{fields:object, format:"json"|"form"}} */
 function parseCallbackBody(raw, contentType) {
   const text = raw.toString("utf8");
   if (!text.trim()) throw new Error("empty");
@@ -90,9 +91,9 @@ function parseCallbackBody(raw, contentType) {
   if (looksJson) {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-    return parsed;
+    return { fields: parsed, format: "json" };
   }
-  return Object.fromEntries(new URLSearchParams(text));
+  return { fields: Object.fromEntries(new URLSearchParams(text)), format: "form" };
 }
 
 /**
@@ -219,9 +220,9 @@ async function handleAirpay2Callback(req, res) {
     return res.status(status).type("html").send(RETURN_PAGE(title, next));
   };
 
-  let body;
+  let body, sourceFormat;
   try {
-    body = parseCallbackBody(raw, contentType);
+    ({ fields: body, format: sourceFormat } = parseCallbackBody(raw, contentType));
   } catch {
     console.warn("[airpay2 callback] rejected: malformed body", { channel });
     return reject(400, "Invalid AirPay callback");
@@ -306,15 +307,29 @@ async function handleAirpay2Callback(req, res) {
 
   const fwd = await forwardAirpay2Callback({
     rawBody: raw,
-    contentType: contentType || "application/x-www-form-urlencoded",
+    contentType: contentType ||
+      (sourceFormat === "json" ? "application/json" : "application/x-www-form-urlencoded"),
+    fields: body, // exactly what was verified; used when forwarding as JSON
+    sourceFormat,
     dedupKey: `${cb.apTxnId}:${cb.txnStatus}`,
     logRef: cb.apTxnId,
   });
+  // `acknowledgement` is the only field that speaks for KKChat's processing;
+  // "unconfirmed" means it was not established, whatever the HTTP status.
   logSummary({
     forwarding: {
       destination: "kkchat",
       status: fwd.duplicate ? "duplicate" : fwd.ok ? "delivered" : "failed",
+      ...(fwd.request_format && { request_format: fwd.request_format }),
+      ...(fwd.request_content_type && { request_content_type: fwd.request_content_type }),
       ...(fwd.status !== undefined && { http_status: fwd.status }),
+      ...(fwd.response && {
+        response_content_type: fwd.response.content_type,
+        response_kind: fwd.response.kind,
+        response_json: fwd.response.json,
+        response_content_type_json: fwd.response.content_type_json,
+      }),
+      acknowledgement: fwd.acknowledgement || "unconfirmed",
       ...(fwd.attempts !== undefined && { attempts: fwd.attempts }),
       ...(fwd.error && { error: fwd.error }),
     },
