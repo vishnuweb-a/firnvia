@@ -33,6 +33,7 @@ const { forwardAirpay2Callback, KKCHAT_AIRPAY2_CALLBACK_URL, _resetForwarderStat
   await import("../services/kkchatForwarder.js");
 
 const CALLBACK_PATH = "/callback/cpm/arp_firvanra/collection";
+const RELAY_ID = /^fr-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const KKCHAT = "https://kkchat.in/callback/cpm/arp_firvanra/collection";
 const OAUTH_URL = "https://kraken.airpay.co.in/airpay/pay/v4/api/oauth2/";
 const VERIFY_URL = "https://kraken.airpay.co.in/airpay/pay/v4/api/verify/";
@@ -84,6 +85,12 @@ globalThis.fetch = async (url, init = {}) => {
       accept: init.headers?.Accept,
       body: Buffer.from(init.body).toString("utf8"),
     });
+    // Recorded apart so the exact-shape assertions on calls stay as they were.
+    Object.defineProperties(kk.calls.at(-1), {
+      userAgent: { value: init.headers?.["User-Agent"] },
+      relayId: { value: init.headers?.["X-Firvanra-Relay-Id"] },
+      headerNames: { value: Object.keys(init.headers || {}) },
+    });
     return kk.respond(init);
   }
   return realFetch(url, init);
@@ -109,6 +116,8 @@ beforeEach(() => {
   delete process.env.AIRPAY2_KKCHAT_FORMAT;
   delete process.env.AIRPAY2_KKCHAT_ACK;
   delete process.env.AIRPAY2_KKCHAT_STRICT_RESPONSE;
+  for (const k of ["AIRPAY2_KKCHAT_DEBUG", "AIRPAY2_KKCHAT_DEBUG_UNTIL",
+    "AIRPAY2_KKCHAT_DEBUG_ORDER_ID", "AIRPAY2_KKCHAT_DEBUG_TXN_ID"]) delete process.env[k];
 });
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -949,6 +958,10 @@ test("structured summary: unknown local order, verified, delivered; no secrets",
   verifyBook.set(cb.ap_transactionid, recordFor(cb));
   const lines = await captureLogs(() => postServerForm(cb));
   const [s] = summaries(lines);
+  assert.equal(s.forwarding.relay_ids.length, 1);
+  assert.match(s.forwarding.relay_ids[0], RELAY_ID);
+  assert.equal(s.forwarding.relay_ids[0], kk.calls[0].relayId, "the id KKChat received");
+  delete s.forwarding.relay_ids;
   assert.deepEqual(s, {
     provider: "airpay2", channel: "ambiguous", format: "form",
     orderid: cb.orderid, ap_transactionid: cb.ap_transactionid,
@@ -1191,6 +1204,8 @@ test("KKChat JSON success acknowledgement is confirmed", async () => {
   let res;
   const [s] = summaries(await captureLogs(async () => { ({ res } = await postServerForm(cb)); }));
   assert.equal(res.status, 200);
+  assert.match(s.forwarding.relay_ids[0], RELAY_ID);
+  delete s.forwarding.relay_ids;
   assert.deepEqual(s.forwarding, {
     destination: "kkchat", status: "delivered",
     request_format: "json", request_content_type: "application/json",
@@ -1696,4 +1711,259 @@ test("lowercase form callback reaches KKChat with the same lowercase names (no r
   assert.equal(sent.ap_SecureHash, cb.ap_SecureHash);
   for (const k of ["MERCID", "TRANSACTIONID", "APTRANSACTIONID", "TRANSACTIONSTATUS"])
     assert.equal(sent[k], undefined, `no fabricated ${k}`);
+});
+
+// ═══════════════ Relay identification and opt-in debug records ═════════════
+// Incident 2091680468: KKChat answered 200 but reports no callback. These tests
+// pin what Firvanra can contribute: an identifiable request KKChat can find in
+// its nginx log, and payload-free, explicitly enabled records of each attempt.
+
+const DEBUG = "[airpay2 forward debug] ";
+const debugRecords = (lines) => lines
+  .filter((l) => l.startsWith(DEBUG))
+  .map((l) => {
+    const rest = l.slice(DEBUG.length);
+    const sp = rest.indexOf(" ");
+    return { event: rest.slice(0, sp), ...JSON.parse(rest.slice(sp + 1)) };
+  });
+const enableDebug = ({ order, txn, untilMs = 60 * 60 * 1000 } = {}) => {
+  process.env.AIRPAY2_KKCHAT_DEBUG = "true";
+  process.env.AIRPAY2_KKCHAT_DEBUG_UNTIL = new Date(Date.now() + untilMs).toISOString();
+  if (order) process.env.AIRPAY2_KKCHAT_DEBUG_ORDER_ID = order;
+  if (txn) process.env.AIRPAY2_KKCHAT_DEBUG_TXN_ID = txn;
+};
+const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
+const INCIDENT_200 = () => new Response("success", {
+  status: 200,
+  headers: [["Content-Type", "application/json;charset=ISO-8859-1"], ["Server", "nginx/1.22.1"],
+    ["Set-Cookie", "JSESSIONID=SESSIONVALUE123; Path=/; HttpOnly"]],
+});
+
+test("every attempt identifies itself: Firvanra User-Agent and a fresh X-Firvanra-Relay-Id", async () => {
+  const cb = callback({ orderid: "KKC-relay-id" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => new Response("down", { status: 503 });
+  const [s] = summaries(await captureLogs(() => postServerForm(cb)));
+  assert.equal(kk.calls.length, 2);
+  for (const c of kk.calls) {
+    assert.equal(c.userAgent, "Firvanra-AirPay2-Relay/1.0 (+https://firvanra.online)");
+    assert.match(c.relayId, RELAY_ID);
+    assert.deepEqual(c.headerNames.sort(), ["Accept", "Content-Type", "User-Agent", "X-Firvanra-Relay-Id"],
+      "no other headers: no loop-guard impersonation, no Frontiva marker, no credentials");
+  }
+  assert.notEqual(kk.calls[0].relayId, kk.calls[1].relayId, "one id per attempt");
+  assert.deepEqual(s.forwarding.relay_ids, kk.calls.map((c) => c.relayId));
+});
+
+test("form rollback also sends the identifying headers", async () => {
+  process.env.AIRPAY2_KKCHAT_FORMAT = "form";
+  const cb = callback({ orderid: "KKC-relay-raw" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  await postServerForm(cb);
+  assert.equal(kk.calls[0].contentType, "application/x-www-form-urlencoded");
+  assert.match(kk.calls[0].userAgent, /^Firvanra-AirPay2-Relay\//);
+  assert.match(kk.calls[0].relayId, RELAY_ID);
+});
+
+test("debug is off by default: no debug records, even for the incident's ids", async () => {
+  const cb = callback({ orderid: "68862341366613893" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  process.env.AIRPAY2_KKCHAT_DEBUG_ORDER_ID = cb.orderid; // ids alone do not enable it
+  const lines = await captureLogs(() => postServerForm(cb));
+  assert.deepEqual(debugRecords(lines), []);
+  assert.equal(kk.calls.length, 1);
+});
+
+test("debug record for a matching order id: exact request facts, no payload values", async () => {
+  const cb = callback({ orderid: "KKC-debug-order", buyer_email: "asha@example.com", buyer_phone: "9123456789" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  kk.respond = INCIDENT_200;
+  const lines = await captureLogs(() => postServerForm(cb));
+  const recs = debugRecords(lines);
+  assert.deepEqual(recs.map((r) => r.event), ["request", "response"]);
+  const [req, resp] = recs;
+
+  const sent = kk.calls[0].body;
+  assert.equal(req.debug_match, "order_id");
+  assert.equal(req.orderid, cb.orderid);
+  assert.equal(req.ap_transactionid, cb.ap_transactionid);
+  assert.equal(req.destination, KKCHAT);
+  assert.equal(req.method, "POST");
+  assert.equal(req.incoming_format, "form");
+  assert.equal(req.request_format, "json");
+  assert.deepEqual(req.field_names, Object.keys(cb));
+  assert.ok(Object.values(req.field_types).every((t) => t === "string"), "form values are strings");
+  assert.equal(req.request_bytes, Buffer.byteLength(sent));
+  assert.equal(req.request_sha256, sha256(sent), "digest of the exact bytes KKChat received");
+  assert.deepEqual(req.request_headers, {
+    "Content-Type": "application/json", Accept: "application/json",
+    "User-Agent": "Firvanra-AirPay2-Relay/1.0 (+https://firvanra.online)",
+    "X-Firvanra-Relay-Id": kk.calls[0].relayId,
+    "Content-Length": String(Buffer.byteLength(sent)),
+  });
+  assert.equal(req.relay_id, kk.calls[0].relayId);
+  assert.equal(req.attempt, 1);
+  assert.ok(Array.isArray(req.destination_addresses));
+
+  assert.equal(resp.relay_id, req.relay_id);
+  assert.equal(resp.http_status, 200);
+  assert.equal(resp.request_sent, true);
+  assert.equal(resp.http_response_received, true);
+  assert.equal(resp.transport_delivered, true);
+  assert.equal(resp.response_valid, false);
+  assert.equal(resp.application_acknowledged, false);
+  assert.equal(resp.payment_recorded, "unconfirmed");
+  assert.equal(resp.response_issue, "malformed_json");
+  assert.equal(resp.response_bytes, 7);
+  assert.equal(resp.response_word, "success");
+  assert.equal(resp.response_charset, "iso-8859-1");
+  assert.equal(resp.response_headers.server, "nginx/1.22.1");
+  assert.equal(resp.response_headers["content-type"], "application/json;charset=ISO-8859-1");
+  assert.deepEqual(resp.response_headers.set_cookie_names, ["JSESSIONID"]);
+  assert.ok(Number.isInteger(resp.elapsed_ms) && resp.elapsed_ms >= 0);
+  assert.ok(Date.parse(resp.ended_at) >= Date.parse(resp.started_at));
+
+  const all = lines.join("\n");
+  for (const secret of [cb.ap_SecureHash, "asha@example.com", "9123456789", "SESSIONVALUE123",
+    "849.00", M2.AIRPAY_PASSWORD_2, M2.AIRPAY_API_KEY_2, M2.AIRPAY_CLIENT_SECRET_2, "tok-m2"])
+    assert.ok(!all.includes(secret), `logs must not contain ${secret}`);
+});
+
+test("debug by AirPay transaction id (known only after checkout) works too", async () => {
+  const cb = callback({ orderid: "KKC-debug-txn" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ txn: `OTHER,${cb.ap_transactionid}` });
+  const recs = debugRecords(await captureLogs(() => postJson(cb)));
+  assert.equal(recs[0].debug_match, "txn_id");
+  assert.equal(recs[0].incoming_format, "json");
+});
+
+test("debug stays off for other ids, an expired window, or a window over 7 days", async () => {
+  const cases = [
+    () => enableDebug({ order: "SOME-OTHER-ORDER" }),
+    () => enableDebug({ order: "KKC-debug-window", untilMs: -1000 }),
+    () => enableDebug({ order: "KKC-debug-window", untilMs: 8 * 24 * 60 * 60 * 1000 }),
+    () => { enableDebug({ order: "KKC-debug-window" }); delete process.env.AIRPAY2_KKCHAT_DEBUG_UNTIL; },
+    () => { enableDebug({ order: "KKC-debug-window" }); process.env.AIRPAY2_KKCHAT_DEBUG = "1"; },
+  ];
+  for (const [i, setup] of cases.entries()) {
+    _resetForwarderState();
+    const cb = callback({ orderid: "KKC-debug-window" });
+    verifyBook.set(cb.ap_transactionid, recordFor(cb));
+    setup();
+    const lines = await captureLogs(() => postServerForm(cb));
+    assert.deepEqual(debugRecords(lines), [], `case ${i}`);
+    assert.equal(summaries(lines)[0].forwarding.status, "delivered", `case ${i}: forwarding unaffected`);
+  }
+});
+
+test("debug: network failure is 'request_sent unknown', no response received; retries get own ids", async () => {
+  const cb = callback({ orderid: "KKC-debug-net" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  kk.respond = () => { throw new TypeError("fetch failed"); };
+  const recs = debugRecords(await captureLogs(() => postServerForm(cb)));
+  const responses = recs.filter((r) => r.event === "response");
+  assert.equal(responses.length, 2);
+  for (const r of responses) {
+    assert.equal(r.request_sent, "unknown");
+    assert.equal(r.http_response_received, false);
+    assert.equal(r.transport_delivered, false);
+    assert.equal(r.error, "network");
+  }
+  assert.notEqual(responses[0].relay_id, responses[1].relay_id);
+});
+
+test("debug: a duplicate that is not re-sent is recorded as not_sent", async () => {
+  const cb = callback({ orderid: "KKC-debug-dup" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  await postServerForm(cb);
+  const recs = debugRecords(await captureLogs(() => postJson(cb)));
+  assert.deepEqual(recs.map((r) => [r.event, r.reason]), [["not_sent", "duplicate_already_delivered"]]);
+  assert.equal(kk.calls.length, 1);
+});
+
+test("duplicate form keys: the JSON keeps the last value; debug names the duplicate", async () => {
+  const cb = callback({ orderid: "KKC-dupkeys" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  const body = `${new URLSearchParams(cb)}&udf1=first&udf1=second`;
+  let res;
+  const lines = await captureLogs(async () => {
+    res = await fetch(`${base}${CALLBACK_PATH}`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "*/*" }, body,
+    });
+  });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(kk.calls[0].body).udf1, "second", "URLSearchParams semantics: last wins");
+  assert.deepEqual(debugRecords(lines)[0].duplicate_field_names, ["udf1"]);
+  assert.ok(!lines.join("\n").includes("first"), "values of duplicates are not logged");
+});
+
+test("nested JSON callback: forwarded byte-for-byte; debug shows value types, not values", async () => {
+  const cb = callback({ orderid: "KKC-nested" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  const raw = JSON.stringify({ ...cb, risk: { score: 12, flags: ["NESTEDFLAG"] }, amount_paise: 84900 });
+  let res;
+  const lines = await captureLogs(async () => { ({ res } = await postJson(null, raw)); });
+  assert.equal(res.status, 200);
+  assert.equal(kk.calls[0].body, raw);
+  const [req] = debugRecords(lines);
+  assert.equal(req.field_types.risk, "object");
+  assert.equal(req.field_types.amount_paise, "number");
+  assert.ok(!lines.join("\n").includes("NESTEDFLAG"));
+});
+
+test("query parameters: names recorded in debug, values neither logged nor relayed", async () => {
+  const cb = callback({ orderid: "KKC-query" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  enableDebug({ order: cb.orderid });
+  let res;
+  const lines = await captureLogs(async () => {
+    res = await fetch(`${base}${CALLBACK_PATH}?src=airpay&token=QUERYVALUE999`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "*/*" },
+      body: new URLSearchParams(cb).toString(),
+    });
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(debugRecords(lines)[0].query_field_names, ["src", "token"]);
+  assert.ok(!lines.join("\n").includes("QUERYVALUE999"));
+  assert.ok(!kk.calls[0].body.includes("QUERYVALUE999"), "body fields only; query is not merged");
+});
+
+test("KKChat 429 is retried once, then a failure with a re-send signal", async () => {
+  const cb = callback({ orderid: "KKC-429" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => new Response("slow down", { status: 429 });
+  const { res } = await postServerForm(cb);
+  assert.equal(res.status, 502);
+  assert.equal(kk.calls.length, 2);
+});
+
+test("a GET carrying a paid callback's fields as a query never verifies, settles or forwards", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const res = await fetch(`${base}${CALLBACK_PATH}?${new URLSearchParams(cb)}`, { headers: BROWSER_HEADERS });
+  assert.equal(res.status, 405);
+  assert.equal(verifyCalls().length, 0);
+  assert.equal(kk.calls.length, 0);
+  assert.equal(orders.get(order.id).status, "pending");
+});
+
+test("an unrecognised (e.g. encrypted envelope) callback: 400, field NAMES logged, values not", async () => {
+  const envelope = { merchant_id: M2.AIRPAY_MID_2, response: "0123456789abcdefENVELOPECIPHERTEXT" };
+  let res;
+  const lines = await captureLogs(async () => { ({ res } = await postServerForm(envelope)); });
+  assert.equal(res.status, 400);
+  assert.equal(kk.calls.length, 0, "not forwarded: it cannot be verified");
+  const line = lines.find((l) => l.startsWith("[airpay2 callback] rejected: incomplete"));
+  assert.ok(line, "rejection logged");
+  const detail = JSON.parse(line.slice(line.indexOf("{")));
+  assert.deepEqual(detail.field_names, ["merchant_id", "response"]);
+  assert.equal(detail.envelope_suspected, true);
+  assert.ok(!lines.join("\n").includes("ENVELOPECIPHERTEXT"));
 });
