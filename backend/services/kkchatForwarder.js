@@ -17,6 +17,12 @@
 //          ORIGINAL content type, and the previous lenient response handling
 //          (any 2xx is a delivery).
 //
+// Field names (AIRPAY2_KKCHAT_FIELD_CASE, read per call; JSON format only):
+//   unset  the JSON body above, unchanged.
+//   "uppercase"  known AirPay aliases are renamed to AirPay's uppercase names
+//          (services/kkchatFieldAdapter.js); values and ap_SecureHash untouched.
+//          Conflicting aliases fail the delivery before any request is sent.
+//
 // Response. Four separate facts, never folded into one Boolean:
 //   transport_delivered  the POST completed with a 2xx from KKChat.
 //   response valid       Content-Type is application/json AND the body parses.
@@ -57,6 +63,7 @@ import {
   RELAY_ID_HEADER, RELAY_USER_AGENT, debugMatch, describeRequest, logDebug,
   newRelayId, resolveHost, safeRequestHeaders, safeResponseHeaders,
 } from "./kkchatDiagnostics.js";
+import { kkchatFieldCaseMode, normalizeKkchatJsonBody } from "./kkchatFieldAdapter.js";
 
 export const KKCHAT_AIRPAY2_CALLBACK_URL =
   "https://kkchat.in/callback/cpm/arp_firvanra/collection";
@@ -368,6 +375,22 @@ export async function forwardAirpay2Callback({
   }
 
   const request = buildKkchatRequest({ format: forwardFormat(), rawBody, contentType, fields, sourceFormat });
+  // What was applied, not what was configured: the raw rollback is never renamed.
+  const fieldCase = request.format === "json" ? kkchatFieldCaseMode() : "passthrough";
+  if (fieldCase === "uppercase") {
+    try {
+      request.body = normalizeKkchatJsonBody(request.body);
+    } catch (err) {
+      const error = err?.code === "KKCHAT_FIELD_ALIAS_CONFLICT" ? "field_alias_conflict" : "field_normalization_failed";
+      // Field names only: the disputed values are never logged.
+      console.error("[airpay2 forward] not sent: outgoing field mapping failed " + JSON.stringify({
+        ref: logRef, error, ...(err?.field_names && { field_names: err.field_names }),
+      }));
+      if (match) logDebug("not_sent", { ...ids, debug_match: match, reason: error });
+      return { ok: false, transport_delivered: false, attempts: 0, error, field_case: fieldCase,
+        request_format: request.format, request_content_type: request.headers["Content-Type"] };
+    }
+  }
   const rule = ackRule();
   const strict = strictResponse();
 
@@ -376,7 +399,7 @@ export async function forwardAirpay2Callback({
       ...ids, debug_match: match,
       destination: KKCHAT_AIRPAY2_CALLBACK_URL, method: "POST",
       incoming_format: sourceFormat || (/json/i.test(contentType) ? "json" : "form"),
-      request_format: request.format,
+      request_format: request.format, field_case: fieldCase,
       ...(diag.queryNames?.length && {
         query_field_names: diag.queryNames.slice(0, 20).map((n) => String(n).slice(0, 40)),
       }),
@@ -396,7 +419,7 @@ export async function forwardAirpay2Callback({
     }
     const acknowledgement = last.response?.acknowledgement || "unconfirmed";
     const log = {
-      ref: logRef, relay_ids, request_format: request.format, status: last.status,
+      ref: logRef, relay_ids, request_format: request.format, field_case: fieldCase, status: last.status,
       transport_delivered: last.transport_delivered,
       error: last.error, attempts: last.attempts, response: last.response,
     };
@@ -414,6 +437,7 @@ export async function forwardAirpay2Callback({
     return {
       ...result, acknowledgement, relay_ids,
       request_format: request.format, request_content_type: request.headers["Content-Type"],
+      field_case: fieldCase,
     };
   })();
 
