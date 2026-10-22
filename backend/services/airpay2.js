@@ -204,7 +204,7 @@ export function extractTxnFields(body) {
     txnStatus:     pick(body, "transaction_status", "TRANSACTIONSTATUS"),
     paymentStatus: pick(body, "transaction_payment_status", "TRANSACTIONPAYMENTSTATUS"),
     message:       pick(body, "message", "MESSAGE"),
-    merchantId:    pick(body, "merchant_id", "MERCHANTID", "mercid"),
+    merchantId:    pick(body, "merchant_id", "MERCHANTID", "MERCID", "mercid"),
     currencyCode:  pick(body, "currency_code", "CURRENCYCODE"),
     chmod:         pick(body, "chmod", "CHMOD"),
     customerVpa:   pick(body, "customer_vpa", "CUSTOMERVPA"),

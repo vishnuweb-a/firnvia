@@ -1,8 +1,8 @@
-# AirPay 2 → KKChat: JSON request / response fix
+# AirPay 2 → KKChat: JSON request / response
 
-Branch: `fix/airpay2-kkchat-json-forwarding` · Scope: `backend/services/kkchatForwarder.js`, `backend/routes/airpay2.js` (forward call + log line), tests, this document.
+Branch: `fix/airpay2-kkchat-json-forwarding` · Scope: `backend/services/kkchatForwarder.js`, `backend/routes/airpay2.js` (forward call and log line), one field alias in `backend/services/airpay2.js`, tests, this document.
 
-> **Status: implemented and tested behind flags, NOT activated.** No KKChat contract exists in this repository or was supplied with the task. Following the task's rule ("do not activate an unverified payload format"), the defaults reproduce the previous production behaviour exactly. Turning the JSON request and acknowledgement checks on needs two pieces of information from KKChat (§3). Setting them is a configuration change. No code change is needed.
+> **Status: JSON forwarding is the default.** KKChat has confirmed that the callback request is JSON, that the request uses AirPay's own JSON structure (including the uppercase field names), and that the response is `application/json`. KKChat has **not** supplied its success-response body. For that reason a valid JSON response is recorded as *received*, and business processing is reported as `unconfirmed` (§6). Form forwarding is still available as an explicit rollback (§8).
 
 ## 1. Original problem
 
@@ -14,167 +14,168 @@ Production logged a fully verified AirPay 2 payment as forwarded:
  "forwarding":{"destination":"kkchat","status":"delivered","http_status":200,"attempts":1}}
 ```
 
-KKChat reports that it did not receive or process the callback.
+KKChat reported that it did not receive or process the callback. Two problems on the Firvanra side:
 
-## 2. Root-cause findings (code inspection)
+- The form body was forwarded as `application/x-www-form-urlencoded`, but KKChat expects JSON.
+- Any 2xx counted as `delivered` and the response body was thrown away. A fallback HTML page and a working handler looked the same.
 
-| # | Question | Finding |
-|---|---|---|
-| 1 | Receipt / parsing | `express.raw` on the exact path, registered before the global parsers. The body is parsed as JSON when Content-Type contains `json`. Otherwise it is parsed as `URLSearchParams`. |
-| 2 | Form vs JSON | Both are supported. The production event above was a **form** body with no browser markers (`ambiguous`). |
-| 3 | Integrity | `ap_SecureHash` = CRC32 of `orderid:ap_transactionid:amount:transaction_status:message:MID:username[:vpa]`, computed over **field values**, not body bytes. Explicit `merchant_id` must equal MID 2. |
-| 4 | Authority | AirPay Verify API, called server-side, plus identity, amount, currency and status cross-checks. Only a status that AirPay's record confirms is forwarded. |
-| 5 | Body forwarded unchanged? | **Yes.** The original raw bytes are forwarded. |
-| 6 | Content-Type to KKChat | **The original one.** For this event it was `application/x-www-form-urlencoded`. |
-| 7 | `Accept: application/json` | **Not sent.** |
-| 8 | KKChat response handling | **The body was drained and discarded.** Content-Type was ignored. |
-| 9 | HTTP 200 = success? | **Yes.** Any 2xx counted as `delivered`, including an HTML page or an application-level error carried in a 200. |
-| 10 | Failures / retries / duplicates | 2 attempts on 5xx/429/timeout/network. 4xx is not retried. A failed relay is not acknowledged to AirPay (502). Dedup uses an in-memory key `ap_transactionid:transaction_status`, held per process. |
+## 2. What did not change
 
-**Conclusion.**
+- **Incoming AirPay format.** AirPay may still post form-encoded or JSON bodies to `https://firvanra.online/callback/cpm/arp_firvanra/collection`. Both are parsed as before.
+- **Verification order.** The checks run in this order: `ap_SecureHash` (CRC32) and merchant id, then the AirPay Verify API (server-side), then identity, amount and currency cross-checks, then status confirmation. Only after all of them is anything forwarded. An invalid, unverified, mismatched or unconfirmed callback is never forwarded.
+- **URLs and routing.** The Success/Failed Response URL, the IPN URL, both `vercel.json` rewrites and the KKChat destination URL are unchanged.
+- **Other gateways.** AirPay 1, SabPaisa and PayU are untouched. Their existing test suites pass.
+- **Customer browser return.** It still redirects with a 303 on success or failure.
 
-- **Confirmed defect in Firvanra:** `"status":"delivered"` meant only that the HTTP status was 2xx. It said nothing about KKChat processing the callback. The log could not distinguish a working handler from a framework fallback page or an application error.
-- **Plausible, unconfirmed cause on the KKChat side:** KKChat's handler expects JSON and ignored or failed to parse the form body while still answering 200. There is supporting evidence: the SabPaisa → KKChat relay in this repo (`routes/payment.js` `forwardToKkchat`) already sends `application/json`. That is a precedent for KKChat's JSON receivers, not the contract for this endpoint.
-- **Ruled out by the earlier audit, and not modified:** the route on the Firvanra side.
+One hardening change is in the AirPay 2 field extractor (`services/airpay2.js`). It now also recognizes `MERCID`, the merchant-id name used in AirPay's uppercase JSON structure. Before this change, a `MERCID` belonging to another merchant was not rejected up front. Signature verification still caught it, because the hash binds the configured MID. It is now rejected with a 400 before the Verify API call.
 
-## 3. KKChat API contract
-
-**Not available.** Searched: every repository document (`docs/*`, `CURRENT_PROJECT_AUDIT.md`, `VERCEL_DEPLOYMENT.md`, README), the code and the tests. The earlier audits list KKChat's contract as an open requirement.
-
-Needed from KKChat before enabling:
-
-1. **Request body.** Is the JSON object of AirPay's original field names and values acceptable (see §7)? Or does KKChat need a different schema (renamed fields, an envelope, numeric types)?
-2. **Signature check.** Does KKChat recompute `ap_SecureHash`? JSON keeps it computable (§7). Does KKChat verify anything over the *raw* bytes? Nothing in the AirPay protocol requires this.
-3. **Success acknowledgement.** The exact JSON field and value(s), for example `{"status":"success"}`.
-4. **Error response.** Its shape, and which errors are permanent and which are retryable.
-5. **Idempotency.** Is KKChat idempotent on `ap_transactionid` (+ `transaction_status`)?
-6. **Authentication.** Does KKChat require a header or shared secret? The relay is currently unauthenticated, as it was before this change.
-
-## 4. Previous request / response format
-
-```http
-POST https://kkchat.in/callback/cpm/arp_firvanra/collection
-Content-Type: <original, e.g. application/x-www-form-urlencoded>
-
-<original AirPay bytes>
-```
-
-Response: any 2xx counted as delivered, and the body was discarded.
-
-## 5. New request / response format
-
-Two non-secret env vars on the API project control the behavior. Both are read on every request.
-
-| Variable | Unset (default) | Set |
-|---|---|---|
-| `AIRPAY2_KKCHAT_FORMAT` | `raw`: byte-identical to the previous behavior, including headers. | `json`: the request is sent as JSON with JSON headers (shown below). Any other value is treated as `raw`. |
-| `AIRPAY2_KKCHAT_ACK` | No contract. A 2xx is still delivered (AirPay is acknowledged as before) but logged `acknowledgement:"unconfirmed"`. | `field=value[\|value…]`, e.g. `status=success`. A 2xx counts as delivered only when the JSON response contains that field with one of those values. |
-
-The request in `json` mode:
+## 3. Request sent to KKChat (default)
 
 ```http
 POST https://kkchat.in/callback/cpm/arp_firvanra/collection
 Content-Type: application/json
 Accept: application/json
 
-{"merchant_id":"…","orderid":"…","ap_transactionid":"…","amount":"849.00","transaction_status":"200",
- "transaction_payment_status":"SUCCESS","message":"Success","chmod":"pg","currency_code":"356","ap_SecureHash":"…"}
+<JSON body, see below>
 ```
 
-The destination URL, redirect handling (`manual`, so a 3xx is never treated as a delivery) and the 4 s timeout are unchanged.
+The body depends on how AirPay sent the callback:
 
-## 6. Files modified
+| AirPay sent | KKChat receives |
+|---|---|
+| JSON (any Content-Type containing `json`, or no Content-Type with a body that starts with `{`) | **The original bytes, unchanged.** Field names (uppercase included), value types, key order, number and amount formatting and whitespace are all preserved. |
+| Form (`application/x-www-form-urlencoded`, or anything else) | **A JSON object of the original fields.** Keys are the exact received names in the received order. Values are the exact received **strings**. For example, `"849.0"` stays `"849.0"` and is not normalized or converted to a number. |
 
-- `backend/services/kkchatForwarder.js`: adds `forwardFormat`, `ackRule`, `buildKkchatRequest`, a bounded response reader and `inspectResponse`, and extends the result and log fields. The retry loop and dedup logic are unchanged, except that the acknowledgement is remembered alongside each dedup entry.
-- `backend/routes/airpay2.js`: passes the parsed, verified fields to the forwarder and adds the new fields to the summary log. Verification, settlement, channel logic and the responses to AirPay and browsers are unchanged.
-- `backend/routes/payment.airpay2.test.js`: the stub records `Accept`, `beforeEach` clears both flags, the exact-shape summary assertion is updated, and 15 new tests are added.
-- `docs/AIRPAY2_KKCHAT_JSON_REQUEST_RESPONSE_FIX.md`: this report.
+The following hold in both cases:
 
-Not changed: AirPay 1, SabPaisa, PayU, `services/airpay2.js`, `server.js`, both `vercel.json` files, URLs, credentials, DNS.
+- Nothing is added, renamed, dropped or replaced. There is no `verified` flag, no name mapping and no sample values. `MERCID`/`merchant_id`, `TRANSACTIONID`/`orderid`, `APTRANSACTIONID`/`ap_transactionid` and `ap_SecureHash` are exactly what AirPay sent for this payment.
+- With a repeated form key, the last value wins. This is the same object that was verified.
+- `ap_SecureHash` is a CRC32 over field **values**, so KKChat can recompute it from the JSON. This is tested.
+- No credentials, private key or token are ever added. This is tested.
 
-## 7. JSON payload mapping and signature compatibility
+**Field names are AirPay's, not converted.** If AirPay posts a form with lowercase names (`orderid`, `ap_transactionid`, …), KKChat receives those lowercase names. If AirPay posts the uppercase JSON structure, KKChat receives it byte-for-byte. Following the instruction to preserve exact field names, no lowercase→uppercase mapping is applied. If KKChat needs uppercase names even when AirPay sends a lowercase form, that would be a deliberate mapping that KKChat must specify (§10).
 
-- **JSON callback:** the original bytes are forwarded. Types, key order and formatting are untouched.
-- **Form callback:** forwarded as a JSON object with the same keys in the same order. Values stay **strings, exactly as received**. Nothing is added (no `verified` flag, no normalized names), dropped or renamed. With a repeated form key, the last value wins. The same object is what was verified.
-- **Signature compatibility:** `ap_SecureHash` is CRC32 over field values joined with `:`, so the receiver can recompute it from the JSON values. This is tested. If KKChat instead verifies a signature over raw form bytes, `json` mode would break that check, which is why the mode is gated on question 2 in §3.
-- **No secrets:** only AirPay's callback fields are sent. Credentials, privatekey and tokens are never added. This is tested.
-- **Ordering:** conversion happens only after the integrity check, the Verify API check and the status confirmation.
+Example: an uppercase JSON IPN for merchant 2 is forwarded exactly as received. The structure matches the sample KKChat shared. The values are always the real transaction's values, never the sample's.
 
-## 8. Acknowledgement validation logic
+```json
+{"TRANSACTIONPAYMENTSTATUS":"SUCCESS","MERCID":"<merchant 2 MID>","TRANSACTIONID":"<orderid>",
+ "APTRANSACTIONID":"<AirPay txn id>","AMOUNT":"100.00","CURRENCYCODE":"356","TRANSACTIONSTATUS":"200",
+ "MESSAGE":"Success","ap_SecureHash":"<as received>","CHECKOUT_TRANSACTION":"N"}
+```
 
-Every attempt reads at most **8 KiB** of the response (then cancels the stream) under the same timeout. It records:
+## 4. Response handling (default)
 
-- HTTP status
-- Content-Type (truncated to 100 chars)
-- `response_kind`: `json` / `html` / `text` / `empty`
-- `response_json`: `parsed` / `malformed` / `n/a`
-- `acknowledgement`
+Every attempt reads at most **8 KiB** of the response, then cancels the stream. The read runs under the same 4 s timeout. Redirects are not followed (`redirect: "manual"`), so a 3xx is never treated as a delivery.
 
-| Response | No `AIRPAY2_KKCHAT_ACK` | With `AIRPAY2_KKCHAT_ACK` |
+| KKChat response | Result | Retried in-request? | Response to AirPay |
+|---|---|---|---|
+| 2xx, `Content-Type: application/json` (parameters and `+json` types allowed), body parses as JSON | **delivered** (received). `acknowledgement:"unconfirmed"` unless an ack rule is set (§6). | no | 200 |
+| 2xx, HTML body | failed, `error:"response_html"` | no | 502 |
+| 2xx, JSON body but non-JSON or missing Content-Type | failed, `response_content_type` | no | 502 |
+| 2xx, malformed or oversized JSON (including HTML served as JSON) | failed, `response_malformed_json` | no | 502 |
+| 2xx, plain text | failed, `response_not_json` | no | 502 |
+| 2xx, empty body | failed, `response_empty` | no | 502 |
+| 4xx (other than 429) | failed | no | 502 |
+| 5xx / 429 / timeout / network error | failed | yes (2 attempts total) | 502 |
+
+Why a non-JSON 2xx is a failure: KKChat confirmed that its response is `application/json`. Any other 2xx shows that the request did not reach a working JSON handler, which is the production incident in §1. These failures are deterministic, so they are not retried within the request. They are also **not** remembered for dedup, and AirPay receives a 502. If AirPay re-sends the callback, it is forwarded again. Local order settlement has already happened at that point and is kept.
+
+The response body is never logged, because it may echo payment data.
+
+## 5. Logging
+
+The summary line `[airpay2 callback] summary {...}` contains, under `forwarding`:
+
+`status` (`delivered` / `failed` / `duplicate` / `not_forwarded`), `request_format`, `request_content_type`, `http_status`, `response_content_type` (truncated to 100 characters), `response_kind` (`json` / `html` / `text` / `empty`), `response_json` (`parsed` / `malformed` / `n/a`), `response_content_type_json` (true/false), `acknowledgement` (`confirmed` / `rejected` / `unconfirmed`), `attempts` and `error`.
+
+The line includes `orderid` and `ap_transactionid`. It never includes the amount, the hash, credentials or any response body.
+
+## 6. Receipt vs. business processing (acknowledgement)
+
+- **Received**: KKChat answered 2xx with valid JSON. This is all that can be established today.
+- **Confirmed**: the JSON response says that KKChat processed the callback. To tell that from the response, we need KKChat's response schema, which has not been supplied. Firvanra therefore does not invent a field such as `success: true`. With no rule, every delivery is logged `acknowledgement:"unconfirmed"`, and nothing in Firvanra treats the payment as settled at KKChat.
+- A received but unconfirmed delivery **is acknowledged to AirPay (200), remembered for dedup and not retried**. Retrying it would send the same payment notification to KKChat again just because its schema is unknown.
+
+`AIRPAY2_KKCHAT_ACK=field=value[|value…]` (for example `status=success`) is kept for when KKChat supplies its schema. With it set, a valid JSON 2xx counts as delivered only if `field` equals one of the values (`confirmed`). If the field has another value, the result is `rejected`. If the field is missing, the result is `unconfirmed`. Both of those fail the delivery with a 502 and are not retried in-request. Only `ack_value` is kept in the forwarder result: the field's value, at most 40 characters.
+
+## 7. Retries and duplicates (unchanged)
+
+- There are 2 attempts, with a 300 ms back-off, on 5xx, 429, timeout and network errors only.
+- Only successful deliveries are kept in dedup memory (`ap_transactionid:transaction_status`). A browser return racing an IPN, or a re-send of the same event, produces one KKChat request. The duplicate reports the remembered acknowledgement.
+- **Limitation:** dedup and retries are in-memory and per process. There is no queue or database, so exactly-once delivery is not guaranteed across cold starts or Vercel instances. KKChat should be idempotent on `ap_transactionid`.
+
+## 8. Configuration and rollback
+
+| Variable (API project) | Value | Effect |
 |---|---|---|
-| 2xx JSON, field = accepted value | delivered, **unconfirmed** | delivered, **confirmed** |
-| 2xx JSON, field = other value | delivered, unconfirmed | **failed, `rejected`**, not retried |
-| 2xx HTML / text / empty / malformed / oversized | delivered, unconfirmed (an HTML body also logs a warning) | **failed, `unconfirmed`**, not retried |
-| 4xx | failed, not retried | failed, not retried |
-| 5xx / 429 / timeout / network | failed, retried (2 attempts) | failed, retried (2 attempts) |
+| `AIRPAY2_KKCHAT_FORMAT` | unset or `json` | **Default.** JSON request and the JSON response checks in §4. Any unrecognized value also means JSON, and a warning is logged once. |
+| | `form` (or `raw`) | **Rollback.** The callback's original bytes are sent with their original Content-Type. Response handling goes back to the previous lenient rule: any 2xx is a delivery, HTML is logged as a warning, and the result is logged `unconfirmed`. |
+| `AIRPAY2_KKCHAT_ACK` | unset | Default. No acknowledgement rule (§6). |
+| | `field=value[\|value…]` | Requires that acknowledgement in the JSON response. This applies in both formats. |
 
-The response body is never logged. Only `ack_value` (the acknowledgement field's value, at most 40 chars) is kept in the forwarder result.
+Both variables are read on every request. **To revert to form forwarding:** set `AIRPAY2_KKCHAT_FORMAT=form` on the API Vercel project and redeploy. To revert the code, revert this branch's commits. There is no data or schema to migrate.
 
-## 9. Error handling and retry behavior
+## 9. Tests
 
-- A failed delivery returns 502 to AirPay, as before. AirPay's re-send gets a fresh attempt because failures are never added to the dedup memory.
-- `rejected` and `unconfirmed` are deterministic, so they are not retried within the request.
-- Duplicates (a browser return racing an IPN, or a re-send) produce one KKChat request. The duplicate reports the remembered acknowledgement.
-- **Limitation (unchanged):** dedup and retries are in-memory and per process. There is no queue or database, so exactly-once delivery is **not** guaranteed: after a cold start or on another Vercel instance, the same event can be forwarded again. KKChat must be idempotent on `ap_transactionid`.
+Local run, Node 24, no network (AirPay and KKChat are stubbed). No real transactions.
 
-## 10. Test results
-
-Local run, Node 24, `npm test`:
-
-- **backend: 331 / 331 pass** (316 existing + 15 new)
-- **frontend: 43 / 43 pass**
-- `vite build` succeeds
+- backend `npm test`: **347 / 347 pass**, including the AirPay 1, SabPaisa, PayU, preflight and health suites
+- `routes/payment.airpay2.test.js`: 99 / 99
+- frontend `npm test`: **43 / 43 pass**
+- frontend `vite build`: succeeds
 - There is no lint or type-check script in either package.
 
-New tests in `backend/routes/payment.airpay2.test.js`, section "KKChat JSON contract":
-json mode form→JSON (fields, string types, hash recomputable, no secrets); json mode JSON→original bytes; json mode keeps guards (bad hash, unconfirmed success not forwarded); json mode browser return still 303; unknown format falls back to raw; ack-rule parsing; JSON success ack confirmed (full summary shape); HTML 200 never confirmed (with and without contract); malformed JSON safe; JSON application rejection reported, not retried, body not logged, re-deliverable; 500 retried with contract; json-mode timeout; json-mode duplicates; bounded read of a 1 MB body; `inspectResponse` classification.
+AirPay 2 coverage includes:
 
-## 11. Production validation checklist
+- form → JSON conversion, and JSON → original bytes (also with no Content-Type)
+- uppercase AirPay structure, end to end, for JSON and form callbacks: exact names, key order, string values, `ap_SecureHash` and the real `MERCID`, never `310123`
+- amount formatting preserved (`"849.0"`)
+- a foreign `MERCID` rejected before verify
+- JSON request headers
+- valid JSON 200: received, unconfirmed, acknowledged, duplicate not re-forwarded
+- `+json` and charset content types accepted
+- HTML, HTML-as-JSON, JSON-as-text/plain, missing Content-Type, plain text, empty and malformed responses: failed, not retried, 502
+- JSON 4xx not retried; 5xx retried
+- timeouts
+- duplicates and concurrent duplicates
+- invalid hash, tampered amount, wrong merchant, unverifiable and unconfirmed callbacks never forwarded
+- the form rollback: original bytes and lenient handling
+- ack-rule confirmed and rejected
+- bounded response read
 
-1. Merge and deploy **with neither variable set**. Behavior is identical to before, and logs now show `response_kind` and `acknowledgement:"unconfirmed"`.
-2. On the next real AirPay 2 payment, read `forwarding.response_kind` / `response_content_type`. `html` would show that KKChat's URL is serving a page, not its handler. Share the summary line (not the body) with KKChat.
-3. After KKChat answers §3:
-   - Set `AIRPAY2_KKCHAT_FORMAT=json` (if JSON of the original fields is accepted).
-   - Set `AIRPAY2_KKCHAT_ACK=<field>=<value>`.
-   - Redeploy the API project.
-4. Owner-run ₹1 payment. Expect `request_format:"json"`, `response_kind:"json"` and `acknowledgement:"confirmed"`.
-5. **KKChat confirms the order is credited on its side.** Only this proves processing.
+## 10. Open items for KKChat
+
+1. **Success-response schema:** which JSON field and value mean "processed". Once known, set `AIRPAY2_KKCHAT_ACK`.
+2. **Field-name casing for form callbacks:** confirm whether lowercase names, as AirPay sends them in a form, are acceptable, or whether a mapping is required (§3).
+3. **Error-response shape:** which errors are permanent and which are retryable.
+4. **Idempotency** on `ap_transactionid` (§7).
+5. **Authentication:** the relay is unauthenticated, as it was before this change.
+
+## 11. Manual production verification
+
+1. Merge, then deploy the API project. No environment change is needed for JSON. Make sure `AIRPAY2_KKCHAT_FORMAT` is not set to `form` or `raw`.
+2. Owner-run ₹1 AirPay 2 payment. Do not use a test script against the live gateway.
+3. In the Vercel function logs, find the `[airpay2 callback] summary` line for that `ap_transactionid`. Expect `verification:"verified"`, `request_format:"json"`, `request_content_type:"application/json"`, `http_status:200`, `response_kind:"json"`, `response_json:"parsed"`, `response_content_type_json:true`, `status:"delivered"` and `acknowledgement:"unconfirmed"`.
+4. If the status is `failed` with `error:"response_*"`, share the summary line (not the body) with KKChat. It shows what their endpoint answered. If needed, roll back (§8).
+5. **KKChat confirms the order is credited on its side.** Only this proves business processing. `acknowledgement:"unconfirmed"` will remain until §10.1 is answered.
 6. Regression: one payment each through AirPay 1, SabPaisa and PayU.
-
-## 12. Rollback
-
-- **Configuration:** unset `AIRPAY2_KKCHAT_FORMAT` and `AIRPAY2_KKCHAT_ACK`, then redeploy. This restores the previous wire behavior exactly.
-- **Code:** revert the branch's commit. There are no data or schema changes to undo.
 
 ## Requirements matrix
 
 | Requirement | Result |
 |---|---|
-| Form and JSON AirPay callbacks accepted and verified | PASS |
-| Verification order unchanged (hash → Verify API → status confirm → forward) | PASS |
-| Invalid signature / unverified payment not forwarded | PASS |
-| JSON request built from verified original fields, signed values preserved | PASS (behind flag) |
-| `Content-Type: application/json` / `Accept: application/json` sent | PASS (behind flag) |
-| No secrets in payload or logs; response body not logged | PASS |
-| Bounded response read; malformed JSON safe; HTML 200 detected | PASS |
-| HTTP 200 alone never reported as acknowledged | PASS |
-| Application rejection reported, not retried | PASS (needs ack rule) |
-| 5xx / timeout retry behavior preserved | PASS |
-| Duplicate handling preserved | PASS |
-| Browser return UX preserved | PASS |
-| AirPay 1 / SabPaisa / PayU unaffected | PASS (existing suites) |
-| Domain routing / Vercel / DNS untouched | PASS |
-| KKChat request schema confirmed | **UNVERIFIED (blocker)** |
-| KKChat acknowledgement schema confirmed | **UNVERIFIED (blocker)** |
-| KKChat receives and processes JSON in production | **UNVERIFIED** |
-| Exactly-once delivery | **FAIL (architectural, documented in §9)** |
+| Form and JSON AirPay callbacks accepted and verified first | PASS |
+| JSON forwarding is the default; form is an explicit rollback | PASS |
+| Exact field names (uppercase included), string values, amount format and `ap_SecureHash` preserved | PASS |
+| Real merchant and transaction ids, never sample values | PASS |
+| `Content-Type` and `Accept` set to `application/json` | PASS |
+| HTTP status, Content-Type and JSON parse checked; HTML, malformed JSON and wrong Content-Type rejected | PASS |
+| Receipt distinguished from confirmed processing; no invented ack field | PASS |
+| Unconfirmed-but-received deliveries not retried | PASS |
+| Optional `AIRPAY2_KKCHAT_ACK` preserved | PASS |
+| Verification, bounded retries and dedup preserved | PASS |
+| URLs, Vercel rewrites, AirPay 1, SabPaisa and PayU unchanged | PASS |
+| No sensitive data or response bodies in logs | PASS |
+| KKChat success-response schema | **UNVERIFIED (not supplied)** |
+| KKChat processes the JSON in production | **UNVERIFIED (§11)** |
+| Exactly-once delivery | **Not guaranteed (architectural, §7)** |
