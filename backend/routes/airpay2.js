@@ -237,7 +237,16 @@ async function handleAirpay2Callback(req, res) {
   // 1. Integrity: completeness, merchant id, ap_SecureHash (CRC32).
   const check = verifyCallback(body, cfg);
   if (!check.ok) {
-    console.warn("[airpay2 callback] rejected:", check.reason, { channel });
+    // Field NAMES only (never values): shows, for example, an encrypted
+    // {merchant_id, response} envelope, which this route does not decrypt.
+    const names = Object.keys(body).slice(0, 40).map((n) => n.slice(0, 40));
+    console.warn(`[airpay2 callback] rejected: ${check.reason} ` + JSON.stringify({
+      channel, format: sourceFormat,
+      ...(check.reason === "incomplete" && {
+        field_names: names,
+        envelope_suspected: names.some((n) => /^(response|encdata|data)$/i.test(n)),
+      }),
+    }));
     return reject(400, "Invalid AirPay callback");
   }
   const cb = check.fields;
@@ -313,6 +322,8 @@ async function handleAirpay2Callback(req, res) {
     sourceFormat,
     dedupKey: `${cb.apTxnId}:${cb.txnStatus}`,
     logRef: cb.apTxnId,
+    // Ids only, for the opt-in debug records. Query values are never relayed or logged.
+    diag: { orderid: cb.orderid, apTxnId: cb.apTxnId, queryNames: Object.keys(req.query || {}) },
   });
   // Four separate facts: transport_delivered (KKChat answered 2xx),
   // response_valid (JSON as contracted), acknowledgement (KKChat confirmed
@@ -344,6 +355,8 @@ async function handleAirpay2Callback(req, res) {
       acknowledgement: fwd.acknowledgement || "unconfirmed",
       payment_recorded: "unconfirmed",
       ...(fwd.attempts !== undefined && { attempts: fwd.attempts }),
+      // X-Firvanra-Relay-Id of each attempt: what KKChat can search its logs for.
+      ...(fwd.relay_ids?.length && { relay_ids: fwd.relay_ids }),
       ...(fwd.error && { error: fwd.error }),
     },
   });

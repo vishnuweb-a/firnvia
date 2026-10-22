@@ -40,12 +40,23 @@
 //          retried). Both fail the delivery.
 // No schema is assumed here: the field and values come from KKChat's contract.
 //
+// Identification and diagnostics (services/kkchatDiagnostics.js): every
+// attempt carries User-Agent: Firvanra-AirPay2-Relay/1.0 and a fresh
+// X-Firvanra-Relay-Id, which the summary log reports as relay_ids, so KKChat
+// can match its nginx access log to a Firvanra attempt. Payload-free debug
+// records before and after each attempt are opt-in per order / txn id.
+//
 // Delivery is best-effort. There is no durable queue (the app has no database):
 // retries are bounded and happen inside the current request only, and the
 // dedup memory below is per-process and lost on restart / across Vercel
 // instances. A delivery that fails here is lost unless AirPay re-sends the
 // callback — which the route encourages by not acknowledging an IPN whose
 // forwarding failed.
+
+import {
+  RELAY_ID_HEADER, RELAY_USER_AGENT, debugMatch, describeRequest, logDebug,
+  newRelayId, resolveHost, safeRequestHeaders, safeResponseHeaders,
+} from "./kkchatDiagnostics.js";
 
 export const KKCHAT_AIRPAY2_CALLBACK_URL =
   "https://kkchat.in/callback/cpm/arp_firvanra/collection";
@@ -227,15 +238,56 @@ export function jsonContractViolation(response) {
   return null;
 }
 
-async function attemptOnce(request, timeoutMs, rule, strict) {
+// `debug`: null, or the payload-free fields shared by this callback's debug records.
+async function attemptOnce(request, timeoutMs, rule, strict, debug, attempt) {
+  const relay_id = newRelayId();
+  const headers = { ...request.headers, "User-Agent": RELAY_USER_AGENT, [RELAY_ID_HEADER]: relay_id };
+  const started = Date.now();
+  if (debug)
+    logDebug("request", {
+      ...debug, relay_id, attempt, started_at: new Date(started).toISOString(),
+      request_headers: safeRequestHeaders(headers, debug.request_bytes),
+    });
+  const result = await sendOnce(request, headers, timeoutMs, rule, strict);
+  result.relay_id = relay_id;
+  if (debug) {
+    const ended = Date.now();
+    const r = result.response;
+    logDebug("response", {
+      relay_id, attempt, orderid: debug.orderid, ap_transactionid: debug.ap_transactionid,
+      started_at: new Date(started).toISOString(), ended_at: new Date(ended).toISOString(),
+      elapsed_ms: ended - started,
+      // A thrown fetch may have failed before or after the bytes left: unknown.
+      request_sent: result.status !== undefined ? true : "unknown",
+      http_response_received: result.status !== undefined,
+      ...(result.status !== undefined && { http_status: result.status }),
+      ...(result.response_headers && { response_headers: result.response_headers }),
+      ...(r && {
+        response_bytes: r.bytes, response_truncated: r.truncated, response_kind: r.kind,
+        response_json: r.json, response_charset: r.charset, response_shape: r.shape,
+        ...(r.word && { response_word: r.word }), ...(r.issue && { response_issue: r.issue }),
+      }),
+      transport_delivered: result.transport_delivered,
+      response_valid: Boolean(r && r.json === "parsed" && r.content_type_json),
+      application_acknowledged: r?.acknowledgement === "confirmed",
+      payment_recorded: "unconfirmed",
+      ...(result.error && { error: result.error }),
+    });
+  }
+  delete result.response_headers;
+  return result;
+}
+
+async function sendOnce(request, headers, timeoutMs, rule, strict) {
   try {
     const res = await fetch(KKCHAT_AIRPAY2_CALLBACK_URL, {
       method: "POST",
-      headers: request.headers,
+      headers,
       body: request.body,
       redirect: "manual", // a redirect is not a delivery
       signal: AbortSignal.timeout(timeoutMs),
     });
+    const response_headers = safeResponseHeaders(res.headers);
     const contentType = res.headers.get("content-type") || "";
     const { charset, encoding } = responseCharset(contentType);
     // The body is inspected but never logged: it may echo payment data.
@@ -255,7 +307,7 @@ async function attemptOnce(request, timeoutMs, rule, strict) {
 
     if (res.status < 200 || res.status >= 300)
       return {
-        ok: false, transport_delivered: false, status: res.status, response,
+        ok: false, transport_delivered: false, status: res.status, response, response_headers,
         ...(res.status >= 300 && res.status < 400 && { error: "redirect_not_followed" }),
         retryable: res.status >= 500 || res.status === 429,
       };
@@ -265,13 +317,13 @@ async function attemptOnce(request, timeoutMs, rule, strict) {
     if (issue) response.issue = issue;
     // Strict (rollback) mode only: a 2xx outside the JSON contract fails.
     if (issue && strict)
-      return { ok: false, transport_delivered: true, status: res.status, response,
+      return { ok: false, transport_delivered: true, status: res.status, response, response_headers,
         error: `response_${issue}`, retryable: false };
     // No ack rule: a 2xx is a delivery, reported as unconfirmed.
     if (!rule || response.acknowledgement === "confirmed")
-      return { ok: true, transport_delivered: true, status: res.status, response };
+      return { ok: true, transport_delivered: true, status: res.status, response, response_headers };
     // Contract configured but not met. Deterministic, so not retried here.
-    return { ok: false, transport_delivered: true, status: res.status, response,
+    return { ok: false, transport_delivered: true, status: res.status, response, response_headers,
       error: `ack_${response.acknowledgement}`, retryable: false };
   } catch (err) {
     const timeout = err?.name === "TimeoutError" || err?.name === "AbortError";
@@ -289,22 +341,28 @@ async function attemptOnce(request, timeoutMs, rule, strict) {
  * @param {"json"|"form"} [p.sourceFormat] how the callback was parsed
  * @param {string}        p.dedupKey     identity of this event (txn + status)
  * @param {string}        [p.logRef]     non-sensitive id for logs (AirPay txn id)
+ * @param {object}        [p.diag]       non-sensitive ids for opt-in debug records:
+ *                                       { orderid, apTxnId, queryNames }
  * @returns {Promise<{ok:boolean, duplicate?:boolean, transport_delivered:boolean,
  *   status?:number, error?:string,
  *   attempts?:number, request_format?:string, request_content_type?:string,
- *   response?:object, acknowledgement?:string}>}
+ *   response?:object, acknowledgement?:string, relay_ids?:string[]}>}
  */
 export async function forwardAirpay2Callback({
-  rawBody, contentType, fields, sourceFormat, dedupKey, logRef = "",
+  rawBody, contentType, fields, sourceFormat, dedupKey, logRef = "", diag = {},
   timeoutMs = DEFAULT_TIMEOUT_MS, attempts = DEFAULT_ATTEMPTS,
 }) {
+  const match = debugMatch(diag);
+  const ids = { orderid: diag.orderid, ap_transactionid: diag.apTxnId };
   if (dedupKey && delivered.has(dedupKey)) {
     console.log("[airpay2 forward] duplicate, already delivered:", logRef);
+    if (match) logDebug("not_sent", { ...ids, debug_match: match, reason: "duplicate_already_delivered" });
     return { ok: true, duplicate: true, transport_delivered: true,
       acknowledgement: delivered.get(dedupKey).acknowledgement };
   }
   // A browser return and an IPN for the same event can race: share one delivery.
   if (dedupKey && inFlight.has(dedupKey)) {
+    if (match) logDebug("not_sent", { ...ids, debug_match: match, reason: "duplicate_in_flight" });
     const shared = await inFlight.get(dedupKey);
     return { ...shared, duplicate: true };
   }
@@ -314,9 +372,22 @@ export async function forwardAirpay2Callback({
   const strict = strictResponse();
 
   const run = (async () => {
+    const debug = match && {
+      ...ids, debug_match: match,
+      destination: KKCHAT_AIRPAY2_CALLBACK_URL, method: "POST",
+      incoming_format: sourceFormat || (/json/i.test(contentType) ? "json" : "form"),
+      request_format: request.format,
+      ...(diag.queryNames?.length && {
+        query_field_names: diag.queryNames.slice(0, 20).map((n) => String(n).slice(0, 40)),
+      }),
+      ...describeRequest(request, { rawBody, sourceFormat }),
+      destination_addresses: await resolveHost(new URL(KKCHAT_AIRPAY2_CALLBACK_URL).hostname),
+    };
     let last;
+    const relay_ids = [];
     for (let i = 1; i <= attempts; i++) {
-      last = await attemptOnce(request, timeoutMs, rule, strict);
+      last = await attemptOnce(request, timeoutMs, rule, strict, debug, i);
+      relay_ids.push(last.relay_id);
       if (last.ok || !last.retryable || i === attempts) {
         last.attempts = i;
         break;
@@ -325,7 +396,7 @@ export async function forwardAirpay2Callback({
     }
     const acknowledgement = last.response?.acknowledgement || "unconfirmed";
     const log = {
-      ref: logRef, request_format: request.format, status: last.status,
+      ref: logRef, relay_ids, request_format: request.format, status: last.status,
       transport_delivered: last.transport_delivered,
       error: last.error, attempts: last.attempts, response: last.response,
     };
@@ -339,9 +410,9 @@ export async function forwardAirpay2Callback({
     } else {
       console.error("[airpay2 forward] failed:", log);
     }
-    const { retryable, ...result } = last;
+    const { retryable, relay_id, ...result } = last;
     return {
-      ...result, acknowledgement,
+      ...result, acknowledgement, relay_ids,
       request_format: request.format, request_content_type: request.headers["Content-Type"],
     };
   })();

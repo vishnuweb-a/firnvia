@@ -28,6 +28,18 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: true }));
 
 app.get("/api/health", (_, res) => res.json({ ok: true, service: "firvanra-api" }));
+
+// Which build is answering, so a deployment can be checked before a controlled
+// payment. Vercel system variables only (sanitised); no configuration state.
+const shown = (v, re) => (re.test(v || "") ? v : "unknown");
+app.get("/api/health/version", (_, res) => res.json({
+  ok: true,
+  service: "firvanra-api",
+  commit: shown((process.env.VERCEL_GIT_COMMIT_SHA || "").slice(0, 12), /^[0-9a-f]{7,12}$/),
+  ref: shown(process.env.VERCEL_GIT_COMMIT_REF, /^[\w./-]{1,60}$/),
+  environment: shown(process.env.VERCEL_ENV, /^(production|preview|development)$/),
+  airpay2_callback_path: AIRPAY2_CALLBACK_PATH,
+}));
 app.use("/api/products", products);
 app.use("/api/orders", orders);
 app.use("/api/payment", payment);
