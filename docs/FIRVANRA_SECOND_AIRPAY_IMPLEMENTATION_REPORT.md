@@ -216,7 +216,7 @@ These have **not** been performed; I have no dashboard access.
 - [ ] `curl -i -X POST -H 'Content-Type: application/json' -d '{}' https://firvanra.online/callback/cpm/arp_firvanra/collection` returns **400** JSON.
 - [ ] Checkout shows AirPay, AirPay 2, SabPaisa and PayU; the original AirPay still opens merchant 1.
 - [ ] AirPay 2 opens AirPay's hosted page showing merchant 2 and the correct amount.
-- [ ] A small real ₹1 test (owner-run, with owner approval) is followed by browser-return and IPN log lines `[airpay2 callback] verified` and `[airpay2 forward] delivered`.
+- [ ] A small real ₹1 test (owner-run, with owner approval) is followed by browser-return and IPN log lines `[airpay2 callback] summary {…"verification":"verified"…}` and `[airpay2 forward] delivered` (see `docs/AIRPAY2_CALLBACK_IPN_FORWARDING_AUDIT.md` §12).
 - [ ] The order page reaches **paid** (if the same instance handled it), and the cart clears only then.
 - [ ] A cancelled or failed attempt gives `failed` or `pending`, never `paid`, and the cart survives.
 - [ ] KKChat confirms receipt of both the success and the failure payloads.

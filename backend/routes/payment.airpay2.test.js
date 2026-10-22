@@ -140,11 +140,24 @@ const recordFor = (cb, over = {}) => {
   return { ...rest, ...over };
 };
 
+// Browser return: a top-level form navigation, with the headers browsers send.
+const BROWSER_HEADERS = {
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Sec-Fetch-Mode": "navigate",
+};
 const postForm = (obj) => {
   const body = new URLSearchParams(obj).toString();
   return fetch(`${base}${CALLBACK_PATH}`, {
     method: "POST", redirect: "manual",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
+    headers: { "Content-Type": "application/x-www-form-urlencoded", ...BROWSER_HEADERS }, body,
+  }).then((res) => ({ res, body }));
+};
+// Form-encoded server-to-server IPN: same body format, no browser markers.
+const postServerForm = (obj) => {
+  const body = new URLSearchParams(obj).toString();
+  return fetch(`${base}${CALLBACK_PATH}`, {
+    method: "POST", redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "*/*" }, body,
   }).then((res) => ({ res, body }));
 };
 const postJson = (obj, raw) => {
@@ -529,8 +542,12 @@ test("verify API unavailable or timing out: nothing settled or forwarded, IPN ge
   const ipn = await postJson(cb);
   assert.equal(ipn.res.status, 503);
   const browser = await postForm(cb);
-  assert.equal(browser.res.status, 303, "customer still lands on the order page");
-  assert.match(browser.res.headers.get("location"), /status=pending&gateway=airpay_2$/);
+  assert.equal(browser.res.status, 503, "never acknowledged, whatever the headers");
+  assert.equal(browser.res.headers.get("location"), null);
+  const page = await browser.res.text();
+  assert.match(page, /http-equiv="refresh" content="0;url=https:\/\/firvanra\.online\/order\//,
+    "customer still lands on the order page");
+  assert.match(page, /status=pending&amp;gateway=airpay_2"/);
   assert.equal(orders.get(order.id).status, "pending");
   assert.equal(kk.calls.length, 0);
 });
@@ -600,13 +617,14 @@ test("KKChat 4xx is not retried", async () => {
   assert.equal(kk.calls.length, 1);
 });
 
-test("KKChat network error on a browser return: customer still redirected", async () => {
+test("KKChat network error on a browser return: 502 page that still sends the customer on", async () => {
   const order = localOrder();
   const cb = callback({ orderid: order.id });
   verifyBook.set(cb.ap_transactionid, recordFor(cb));
   kk.respond = () => { throw new TypeError("fetch failed"); };
   const { res } = await postForm(cb);
-  assert.equal(res.status, 303);
+  assert.equal(res.status, 502, "relay failure is never acknowledged");
+  assert.match(await res.text(), /http-equiv="refresh"[^>]*returnStatus=success/);
   assert.equal(orders.get(order.id).status, "paid");
 });
 
@@ -678,4 +696,288 @@ test("global body parsing for other routes still works after the raw route", asy
   });
   assert.equal(res.status, 400);
   assert.deepEqual(await res.json(), { error: "Cart is empty." });
+});
+
+// ═════════════════════════════ Channel detection ═══════════════════════════
+
+const { callbackChannel } = await import("./airpay2.js");
+
+test("channel: JSON is IPN; form is browser only with navigation markers, else ambiguous", () => {
+  assert.equal(callbackChannel({ "content-type": "application/json" }), "ipn");
+  assert.equal(callbackChannel({ "content-type": "application/json; charset=utf-8", accept: "text/html" }), "ipn");
+  assert.equal(callbackChannel({ "content-type": "application/x-www-form-urlencoded",
+    accept: "text/html,application/xhtml+xml" }), "browser");
+  assert.equal(callbackChannel({ "content-type": "application/x-www-form-urlencoded",
+    "sec-fetch-mode": "navigate" }), "browser");
+  assert.equal(callbackChannel({ "content-type": "application/x-www-form-urlencoded", accept: "*/*" }), "ambiguous");
+  assert.equal(callbackChannel({ "content-type": "application/x-www-form-urlencoded" }), "ambiguous");
+  assert.equal(callbackChannel({}), "ambiguous");
+});
+
+test("form-encoded IPN success: JSON 200 ack (not a redirect), settled, forwarded verbatim", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res, body } = await postServerForm(cb);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("location"), null);
+  assert.deepEqual(await res.json(), { received: true, forwarded: true, duplicate: false });
+  assert.equal(orders.get(order.id).status, "paid");
+  assert.equal(kk.calls.length, 1);
+  assert.equal(kk.calls[0].contentType, "application/x-www-form-urlencoded");
+  assert.equal(kk.calls[0].body, body);
+});
+
+test("form-encoded IPN failure: order failed, authentic failure forwarded, 200 ack", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id, transaction_status: "400",
+    transaction_payment_status: "FAIL", message: "Failed" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postServerForm(cb);
+  assert.equal(res.status, 200);
+  assert.equal(orders.get(order.id).status, "failed");
+  assert.equal(kk.calls.length, 1);
+});
+
+test("form-encoded IPN keeps its re-send signals: 503 when unverifiable, 502 when relay fails", async () => {
+  const cb = callback({ orderid: "66862257128204165" });
+  verifyBook.set(cb.ap_transactionid, () => { const e = new Error("t"); e.code = "ECONNABORTED"; throw e; });
+  const unverifiable = await postServerForm(cb);
+  assert.equal(unverifiable.res.status, 503, "previously swallowed as a 200 browser page");
+  assert.equal(kk.calls.length, 0);
+
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => new Response("down", { status: 500 });
+  const relayFailed = await postServerForm(cb);
+  assert.equal(relayFailed.res.status, 502);
+
+  kk.respond = () => new Response("OK", { status: 200 });
+  const resent = await postServerForm(cb);
+  assert.equal(resent.res.status, 200);
+  assert.equal((await resent.res.json()).forwarded, true);
+});
+
+test("browser return failure: redirected with returnStatus=failure, failure forwarded", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id, transaction_status: "400",
+    transaction_payment_status: "FAIL", message: "Cancelled by user" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postForm(cb);
+  assert.equal(res.status, 303);
+  assert.match(res.headers.get("location"), /returnStatus=failure$/);
+  assert.equal(orders.get(order.id).status, "failed");
+  assert.equal(kk.calls.length, 1);
+});
+
+test("browser return with missing fields: error page, nothing verified or forwarded", async () => {
+  const { res } = await postForm({ orderid: "FIR-x", transaction_status: "200" });
+  assert.equal(res.status, 400);
+  assert.match(res.headers.get("content-type"), /text\/html/);
+  assert.equal(verifyCalls().length, 0);
+  assert.equal(kk.calls.length, 0);
+});
+
+test("IPN first, then browser return: settled once, forwarded once, customer redirected", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const ipn = await postServerForm(cb);
+  assert.equal(ipn.res.status, 200);
+  const paidAt = orders.get(order.id).paidAt;
+  const browser = await postForm(cb);
+  assert.equal(browser.res.status, 303);
+  assert.match(browser.res.headers.get("location"), /returnStatus=success$/);
+  assert.equal(orders.get(order.id).paidAt, paidAt);
+  assert.equal(kk.calls.length, 1);
+});
+
+test("delayed IPN after a verified browser return is acknowledged as a duplicate", async () => {
+  const cb = callback({ orderid: "66862257128204166" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  assert.equal((await postForm(cb)).res.status, 200, "unknown local order: neutral page");
+  await new Promise((r) => setTimeout(r, 20));
+  const late = await postJson(cb);
+  assert.equal(late.res.status, 200);
+  assert.equal((await late.res.json()).duplicate, true);
+  assert.equal(kk.calls.length, 1);
+});
+
+test("verify record in a different currency is a mismatch: rejected, not forwarded", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb, { currency_code: "840" }));
+  assert.equal((await postJson(cb)).res.status, 400);
+  assert.equal(orders.get(order.id).status, "pending");
+  assert.equal(kk.calls.length, 0);
+});
+
+// ── Status never depends on headers ─────────────────────────────────────────
+// AirPay's IPN request headers are unconfirmed. A form IPN that happens to send
+// browser-like headers must still get its non-2xx when processing fails.
+
+// node:http, not fetch: fetch forces `sec-fetch-mode: cors` and adds a
+// text/plain Content-Type, so it cannot send these header sets as written.
+const { request: httpRequest } = await import("node:http");
+const postFormWith = (obj, headers) => {
+  const body = new URLSearchParams(obj).toString();
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(`${base}${CALLBACK_PATH}`, { method: "POST", headers }, (r) => {
+      r.resume();
+      r.on("end", () => resolve({
+        res: { status: r.statusCode, headers: { get: (n) => r.headers[n.toLowerCase()] ?? null } },
+        body,
+      }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+};
+const HEADER_VARIANTS = {
+  "Accept: text/html only": { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
+  "Sec-Fetch-Mode: navigate only": { "Content-Type": "application/x-www-form-urlencoded", "Sec-Fetch-Mode": "navigate" },
+  "full browser headers": { "Content-Type": "application/x-www-form-urlencoded", ...BROWSER_HEADERS },
+  "no browser headers": { "Content-Type": "application/x-www-form-urlencoded" },
+  "no Content-Type at all": {},
+  "unexpected Content-Type": { "Content-Type": "text/plain", Accept: "text/html" },
+};
+
+for (const [name, headers] of Object.entries(HEADER_VARIANTS)) {
+  test(`form callback with ${name}: verify unavailable → 503, relay failure → 502, never 2xx/3xx`, async () => {
+    const order = localOrder();
+    const cb = callback({ orderid: order.id });
+    verifyBook.set(cb.ap_transactionid, () => { throw Object.assign(new Error("t"), { code: "ECONNABORTED" }); });
+    const unverifiable = await postFormWith(cb, headers);
+    assert.equal(unverifiable.res.status, 503);
+    assert.equal(unverifiable.res.headers.get("location"), null);
+    assert.equal(orders.get(order.id).status, "pending");
+
+    verifyBook.set(cb.ap_transactionid, recordFor(cb));
+    kk.respond = () => new Response("down", { status: 500 });
+    const relayFailed = await postFormWith(cb, headers);
+    assert.equal(relayFailed.res.status, 502);
+    assert.equal(relayFailed.res.headers.get("location"), null);
+
+    // Re-send after recovery: processed and forwarded exactly once more.
+    kk.respond = () => new Response("OK", { status: 200 });
+    const resent = await postFormWith(cb, headers);
+    assert.ok([200, 303].includes(resent.res.status));
+    assert.equal(orders.get(order.id).status, "paid");
+    assert.equal(kk.calls.length, 3, "2 failed attempts + 1 delivery");
+  });
+}
+
+test("browser-headed callback claiming unconfirmed success: 503 page, not a redirect, not forwarded", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb, {
+    transaction_status: "211", transaction_payment_status: "TRANSACTION IN PROCESS" }));
+  const { res } = await postForm(cb);
+  assert.equal(res.status, 503);
+  assert.match(res.headers.get("content-type"), /text\/html/);
+  assert.equal(orders.get(order.id).status, "pending");
+  assert.equal(kk.calls.length, 0);
+});
+
+test("browser failure page for an external order has no redirect to follow", async () => {
+  const cb = callback({ orderid: "66862257128204168" });
+  verifyBook.set(cb.ap_transactionid, () => { throw new Error("net"); });
+  const { res } = await postForm(cb);
+  assert.equal(res.status, 503);
+  const page = await res.text();
+  assert.ok(!page.includes("http-equiv"), "no Firvanra order page for a KKChat order");
+  assert.match(page, /We are confirming your payment/);
+});
+
+test("browser return for a verified pending payment: redirected, forwarded", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id, transaction_status: "211",
+    transaction_payment_status: "TRANSACTION IN PROCESS", message: "Processing" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const { res } = await postForm(cb);
+  assert.equal(res.status, 303);
+  assert.match(res.headers.get("location"), /status=pending&gateway=airpay_2$/);
+  assert.equal(orders.get(order.id).status, "pending");
+  assert.equal(kk.calls.length, 1);
+});
+
+test("verify record from a different merchant is a mismatch: rejected, not forwarded", async () => {
+  const cb = callback({ orderid: "KKC-other-mid" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb, { merchant_id: M1.AIRPAY_MERCHANT_ID }));
+  assert.equal((await postServerForm(cb)).res.status, 400);
+  assert.equal(kk.calls.length, 0);
+});
+
+test("KKChat timeout through the route: 502, bounded attempts, local settlement kept", async () => {
+  const order = localOrder();
+  const cb = callback({ orderid: order.id });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => { throw new DOMException("The operation timed out.", "TimeoutError"); };
+  const { res } = await postJson(cb);
+  assert.equal(res.status, 502);
+  assert.equal(kk.calls.length, 2);
+  assert.equal(orders.get(order.id).status, "paid");
+});
+
+// ═════════════════════════════ Logging ═════════════════════════════════════
+
+async function captureLogs(fn) {
+  const lines = [];
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  for (const k of Object.keys(orig)) console[k] = (...a) => lines.push(a.map(String).join(" "));
+  try { await fn(); } finally { Object.assign(console, orig); }
+  return lines;
+}
+const SUMMARY = "[airpay2 callback] summary ";
+const summaries = (lines) => lines
+  .filter((l) => l.startsWith(SUMMARY))
+  .map((l) => JSON.parse(l.slice(SUMMARY.length)));
+
+test("structured summary: unknown local order, verified, delivered; no secrets", async () => {
+  const cb = callback({ orderid: "66862257128204167" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  const lines = await captureLogs(() => postServerForm(cb));
+  const [s] = summaries(lines);
+  assert.deepEqual(s, {
+    provider: "airpay2", channel: "ambiguous", format: "form",
+    orderid: cb.orderid, ap_transactionid: cb.ap_transactionid,
+    verification: "verified", outcome: "paid", local_order: "unknown",
+    forwarding: { destination: "kkchat", status: "delivered", http_status: 200, attempts: 1 },
+  });
+  const all = lines.join("\n");
+  for (const secret of Object.values(M2).filter((v) => v !== M2.AIRPAY_MID_2))
+    assert.ok(!all.includes(secret), "no AirPay 2 credential in logs");
+  assert.ok(!all.includes(cb.ap_SecureHash), "no secure hash in logs");
+});
+
+test("structured summary: failed relay and unverifiable callback are reported as such", async () => {
+  const cb = callback({ orderid: "KKC-log-fail" });
+  verifyBook.set(cb.ap_transactionid, recordFor(cb));
+  kk.respond = () => new Response("down", { status: 500 });
+  const [failed] = summaries(await captureLogs(() => postJson(cb)));
+  assert.equal(failed.forwarding.status, "failed");
+  assert.equal(failed.forwarding.http_status, 500);
+  assert.equal(failed.forwarding.attempts, 2);
+
+  const cb2 = callback({ orderid: "KKC-log-unverified" });
+  verifyBook.set(cb2.ap_transactionid, () => { throw new Error("net"); });
+  const [unverified] = summaries(await captureLogs(() => postJson(cb2)));
+  assert.equal(unverified.verification, "unavailable");
+  assert.equal(unverified.forwarding.status, "not_forwarded");
+});
+
+// ═════════════════════════════ Public-domain routing ═══════════════════════
+
+test("firvanra.online proxies the callback path to the API, before the SPA fallback", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const fe = JSON.parse(await readFile(new URL("../../frontend/vercel.json", import.meta.url), "utf8"));
+  assert.equal(fe.redirects, undefined, "no redirect: a 30x would turn AirPay's POST into a GET");
+  const i = fe.rewrites.findIndex((r) => r.source === CALLBACK_PATH);
+  assert.ok(i >= 0, "callback rewrite present");
+  assert.equal(fe.rewrites[i].destination, `https://api.firvanra.online${CALLBACK_PATH}`);
+  const spa = fe.rewrites.findIndex((r) => r.destination === "/index.html");
+  assert.ok(i < spa, "callback rewrite precedes the SPA catch-all");
+
+  const be = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.ok(be.rewrites.some((r) => r.source === "/(.*)" && r.destination === "/server.js"),
+    "API project hands every path to Express");
 });

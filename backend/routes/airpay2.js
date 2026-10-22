@@ -105,7 +105,32 @@ function verifiedIdentityMismatch(cb, v, cfg) {
   if (v.merchantId && v.merchantId !== cfg.merchantId) return "merchant_id";
   const amount = normalizeAmount(v.amount);
   if (amount === null || amount !== normalizeAmount(cb.amount)) return "amount";
+  // Only comparable when both sides state it; INR (356) is the only currency sent.
+  if (v.currencyCode && cb.currencyCode && v.currencyCode !== cb.currencyCode) return "currency";
+  if (v.currencyCode && v.currencyCode !== "356") return "currency";
   return null;
+}
+
+/**
+ * Browser return or server-to-server IPN? Both arrive at the same URL, and
+ * AirPay documents no field that tells them apart.
+ *
+ *   "ipn"       JSON body. An HTML form cannot submit JSON, so no browser
+ *               return can look like this.
+ *   "browser"   form body with top-level-navigation markers (Accept: text/html,
+ *               Sec-Fetch-Mode: navigate). A heuristic: a server could send them.
+ *   "ambiguous" any other form body.
+ *
+ * The result picks the response BODY (HTML page vs JSON) and the log label
+ * only. It never picks the HTTP status: that follows the processing outcome
+ * alone, so a misread IPN still gets its 502/503 re-send signal.
+ */
+export function callbackChannel(headers) {
+  const contentType = String(headers["content-type"] || "");
+  if (/json/i.test(contentType)) return "ipn";
+  const accept = String(headers.accept || "");
+  const mode = String(headers["sec-fetch-mode"] || "");
+  return /text\/html/i.test(accept) || /navigate/i.test(mode) ? "browser" : "ambiguous";
 }
 
 /**
@@ -151,28 +176,47 @@ function settleLocalOrder(v, outcome) {
   return { local: "unchanged", status: order.status }; // unknown provider status: don't guess
 }
 
-const RETURN_PAGE = (title) => `<!doctype html><html><head><meta charset="utf-8">` +
-  `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title></head>` +
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+// `next`: send the customer on to this URL (used where a non-2xx status rules
+// out a 303 redirect). Browsers render and follow it whatever the status.
+const RETURN_PAGE = (title, next) => `<!doctype html><html><head><meta charset="utf-8">` +
+  `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>` +
+  (next ? `<meta http-equiv="refresh" content="0;url=${escapeHtml(next)}">` : "") + `</head>` +
   `<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">` +
   `<h1 style="font-size:1.25rem">${title}</h1>` +
-  `<p>You can close this window and return to the merchant.</p></body></html>`;
+  (next
+    ? `<p><a href="${escapeHtml(next)}">Continue to your order</a></p></body></html>`
+    : `<p>You can close this window and return to the merchant.</p></body></html>`);
 
 async function handleAirpay2Callback(req, res) {
   const contentType = String(req.headers["content-type"] || "");
   const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-  // Per docs.airpay.co.in/v4 the IPN is a JSON POST; the browser return is a
-  // form POST from the customer's browser. Same URL, different response style.
-  const channel = /json/i.test(contentType) ? "ipn" : "browser";
+  // Same URL, different response style. See callbackChannel.
+  const channel = callbackChannel(req.headers);
+  const format = /json/i.test(contentType) ? "json" : "form";
 
-  // Responses. IPN: status codes AirPay can act on. Browser: a page or redirect.
+  // One structured line per callback that reached verification. `delivered`
+  // means KKChat answered 2xx — not that KKChat processed or credited anything.
+  const summary = { provider: "airpay2", channel, format };
+  const logSummary = (extra) =>
+    console.log("[airpay2 callback] summary " + JSON.stringify({ ...summary, ...extra }));
+
+  // Responses. The status is the processing outcome for EVERY channel; only the
+  // body differs (HTML for a browser, JSON otherwise). A browser gets a 303 only
+  // on a 2xx outcome, because a redirect would acknowledge a misread IPN.
+  const html = channel === "browser";
   const reject = (status, error) =>
-    channel === "ipn"
-      ? res.status(status).json({ error })
-      : res.status(status).type("html").send(RETURN_PAGE("We could not process this payment response"));
+    html
+      ? res.status(status).type("html").send(RETURN_PAGE("We could not process this payment response"))
+      : res.status(status).json({ error });
   const done = ({ status = 200, body, orderId, returnStatus }) => {
-    if (channel === "ipn") return res.status(status).json(body);
-    if (orderId) return res.redirect(303, airpay2OrderRedirect(orderId, returnStatus));
-    return res.status(200).type("html").send(RETURN_PAGE("Payment response received"));
+    if (!html) return res.status(status).json(body);
+    const next = orderId ? airpay2OrderRedirect(orderId, returnStatus) : null;
+    if (status < 300 && next) return res.redirect(303, next);
+    const title = status < 300 ? "Payment response received" : "We are confirming your payment";
+    return res.status(status).type("html").send(RETURN_PAGE(title, next));
   };
 
   let body;
@@ -197,14 +241,21 @@ async function handleAirpay2Callback(req, res) {
   }
   const cb = check.fields;
   const ref = { channel, orderid: cb.orderid, ap_transactionid: cb.apTxnId };
+  Object.assign(summary, { orderid: cb.orderid, ap_transactionid: cb.apTxnId });
   const localOrderId = orders.has(cb.orderid) ? cb.orderid : null;
+  const notForwarded = (reason) => ({ destination: "kkchat", status: "not_forwarded", reason });
 
   // 2. Authority: AirPay's own record, fetched server-side.
   const verified = await verifyTransaction({ orderid: cb.orderid, apTxnId: cb.apTxnId }, cfg);
   if (!verified.ok || !verified.found) {
-    // Not verifiable right now: nothing settled, nothing forwarded. 503 asks
-    // AirPay to re-send the IPN later.
+    // Not verifiable right now: nothing settled, nothing forwarded. 503 = not
+    // acknowledged; whether AirPay re-sends on it is unconfirmed.
     console.warn("[airpay2 callback] verify inconclusive:", verified.reason || "not_found", ref);
+    logSummary({
+      verification: verified.ok ? "not_found" : "unavailable",
+      local_order: localOrderId ? "present" : "unknown",
+      forwarding: notForwarded("unverified"),
+    });
     return done({
       status: 503,
       body: { error: "Verification temporarily unavailable." },
@@ -216,13 +267,20 @@ async function handleAirpay2Callback(req, res) {
   const mismatch = verifiedIdentityMismatch(cb, v, cfg);
   if (mismatch) {
     console.warn("[airpay2 callback] rejected: verify mismatch on", mismatch, ref);
+    logSummary({ verification: `mismatch_${mismatch}`, forwarding: notForwarded("mismatch") });
     return reject(400, "Verification mismatch");
   }
 
   // 3. Local settlement — independent of forwarding, and optional: callbacks
   //    for KKChat's own orders have no Firvanra order and that is expected.
   const local = settleLocalOrder(v, verified.outcome);
-  console.log("[airpay2 callback] verified:", { ...ref, outcome: verified.outcome, ...local });
+  Object.assign(summary, {
+    verification: "verified",
+    outcome: verified.outcome,
+    local_order: local.local,
+    ...(local.status && { local_status: local.status }),
+    ...(local.reason && { local_reason: local.reason }),
+  });
   const returnStatus =
     local.status === "paid" ? "success" : local.status === "failed" ? "failure" : null;
 
@@ -233,6 +291,7 @@ async function handleAirpay2Callback(req, res) {
   if (!confirmed) {
     const claimsPaid = classifyStatus(cb.txnStatus, cb.paymentStatus) === "paid";
     console.warn("[airpay2 callback] not forwarded: status not confirmed by verify", ref);
+    logSummary({ forwarding: notForwarded(claimsPaid ? "unconfirmed_success" : "superseded") });
     // Claims success that AirPay has not confirmed yet: ask for a re-send.
     // Otherwise it is superseded; acknowledge so it is not retried forever.
     return done({
@@ -251,10 +310,19 @@ async function handleAirpay2Callback(req, res) {
     dedupKey: `${cb.apTxnId}:${cb.txnStatus}`,
     logRef: cb.apTxnId,
   });
+  logSummary({
+    forwarding: {
+      destination: "kkchat",
+      status: fwd.duplicate ? "duplicate" : fwd.ok ? "delivered" : "failed",
+      ...(fwd.status !== undefined && { http_status: fwd.status }),
+      ...(fwd.attempts !== undefined && { attempts: fwd.attempts }),
+      ...(fwd.error && { error: fwd.error }),
+    },
+  });
 
   if (!fwd.ok) {
-    // Local settlement above already happened and stays. The IPN is not
-    // acknowledged so AirPay can re-send it and the relay gets another try.
+    // Local settlement above already happened and stays. Not acknowledged, on
+    // every channel, so a re-send (if AirPay makes one) gets another try.
     return done({
       status: 502,
       body: { error: "Callback relay failed." },
