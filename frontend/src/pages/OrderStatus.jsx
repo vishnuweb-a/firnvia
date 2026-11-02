@@ -20,7 +20,7 @@ const VIEW = {
   failed: {
     cls: "status-failed", icon: "⚠️", badge: "Payment failed",
     title: "Payment didn't go through",
-    note: "No money has been captured for this attempt. Your cart is still saved, so you can try again.",
+    note: "Please check your bank or payment app before retrying. If money was debited, contact firvanra@gmail.com with your order ID. Your cart is still saved.",
   },
   pending: {
     cls: "status-pending", icon: "⏳", badge: "Payment pending",
@@ -103,8 +103,8 @@ export default function OrderStatus() {
             )}
             {timedOut && !isSettled(status) && (
               <p className="lead" style={{ margin: "14px auto 0" }}>
-                This is taking longer than usual. Refresh this page to check again — we'll
-                email you once the payment is confirmed.
+                This is taking longer than usual. Refresh this page to check again — if money was
+                debited, contact firvanra@gmail.com with your order ID.
               </p>
             )}
 

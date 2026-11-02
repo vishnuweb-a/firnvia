@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 export default function Footer() {
   return (
     <footer className="footer" id="about">
@@ -16,20 +18,20 @@ export default function Footer() {
           <div>
             <h4>Useful links</h4>
             <ul>
-              <li><a href="#home">Home</a></li>
-              <li><a href="#services">Services</a></li>
-              <li><a href="#contact">Contact us</a></li>
-              <li><a href="#">Terms & Conditions</a></li>
-              <li><a href="#">Privacy Policy</a></li>
-              <li><a href="#">Refund & Cancellation</a></li>
+              <li><Link to="/#home">Home</Link></li>
+              <li><Link to="/#services">Services</Link></li>
+              <li><Link to="/#contact">Contact us</Link></li>
+              <li><Link to="/terms-and-conditions">Terms &amp; Conditions</Link></li>
+              <li><Link to="/privacy-policy">Privacy Policy</Link></li>
+              <li><Link to="/refund-and-cancellation-policy">Refund &amp; Cancellation</Link></li>
             </ul>
           </div>
           <div>
             <h4>Contact info</h4>
             <ul>
               <li>UG-2, Vijay Block, Laxmi Nagar, East Delhi, Delhi 110092</li>
-              <li>Phone: 7669438261</li>
-              <li>Email: firvanra@gmail.com</li>
+              <li>Phone: <a href="tel:+917669438261">7669438261</a></li>
+              <li>Email: <a href="mailto:firvanra@gmail.com">firvanra@gmail.com</a></li>
             </ul>
           </div>
         </div>
