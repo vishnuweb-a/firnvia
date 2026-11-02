@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import App from "../App.jsx";
 import Footer from "../components/Footer.jsx";
 import PaymentMethodSelector from "../components/PaymentMethodSelector.jsx";
@@ -18,6 +18,7 @@ export default function Checkout() {
   const navigate = useNavigate();
   const [buyer, setBuyer] = useState({ firstName: "", lastName: "", email: "", phone: "" });
   const [provider, setProvider] = useState(DEFAULT_PAYMENT_PROVIDER);
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -28,6 +29,8 @@ export default function Checkout() {
     setError(null);
     if (!buyer.firstName || !buyer.email || !buyer.phone)
       return setError("Please fill name, email, and phone.");
+    if (!agreed)
+      return setError("Please confirm that you agree to the Terms & Conditions and acknowledge the Refund & Cancellation Policy.");
     setBusy(true);
     try {
       const order = await api.createOrder(
@@ -95,6 +98,17 @@ export default function Checkout() {
 
                 <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} />
 
+                <div className="consent">
+                  <input id="agree" type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} aria-describedby="agree-help" />
+                  <label htmlFor="agree">
+                    I have read and agree to the <Link to="/terms-and-conditions" target="_blank">Terms &amp; Conditions</Link> and
+                    acknowledge the <Link to="/refund-and-cancellation-policy" target="_blank">Refund &amp; Cancellation Policy</Link>.
+                  </label>
+                </div>
+                <p id="agree-help" style={{ fontSize: "0.8rem", color: "var(--muted)", marginBottom: 14 }}>
+                  See how we use your details in the <Link to="/privacy-policy" target="_blank" className="consent-link" style={{ textDecoration: "underline", color: "var(--accent-deep)" }}>Privacy Policy</Link>.
+                  Digital products are not refundable for change of mind once delivered.
+                </p>
                 <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={pay}>
                   {payLabel}
                 </button>
