@@ -59,6 +59,7 @@ the payment flow, and provider callbacks get clean URLs on the main domain.
 | AirPay    | v4 Simple Transaction (OAuth2 + AES)  | `POST /api/payment/airpay/callback`     | — (callback only)                      |
 | SabPaisa  | PG 3.0 REST + Transaction Enquiry     | `GET`/`POST /api/payment/sabpaisa/callback` | `POST /api/payment/sabpaisa/webhook` |
 | PayU      | Hosted Checkout (SHA-512 hash)        | `POST /api/payment/payu/callback`       | `POST /api/payment/payu/webhook`       |
+| HDFC SmartGateway (UPI only) | Payment Page, Basic Auth + Order Status API | `GET`/`POST /payments/hdfc/return` | `POST /api/webhooks/hdfc` (Basic auth) |
 
 Signature verification **fails closed** throughout: a callback that arrives
 without a verifiable hash is rejected, never treated as successful.

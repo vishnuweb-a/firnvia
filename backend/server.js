@@ -11,6 +11,7 @@ import airpay2, {
   airpay2Callback,
   airpay2CallbackMethodNotAllowed,
 } from "./routes/airpay2.js";
+import hdfc, { HDFC_RETURN_PATH, HDFC_WEBHOOK_PATH, hdfcReturn, hdfcWebhook } from "./routes/hdfc.js";
 
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
@@ -45,6 +46,10 @@ app.use("/api/orders", orders);
 app.use("/api/payment", payment);
 app.use("/api/payment/airpay-2", airpay2);
 app.use("/api/contact", contact);
+app.use("/api/payment/hdfc", hdfc);
+app.get(HDFC_RETURN_PATH, hdfcReturn);
+app.post(HDFC_RETURN_PATH, hdfcReturn);
+app.post(HDFC_WEBHOOK_PATH, hdfcWebhook);
 
 // ── Legacy SabPaisa relay endpoint ───────────────────────────────────────────
 // This endpoint previously accepted any unauthenticated POST and blind-forwarded

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
 import { getProduct } from "../data/products.js";
+import { refreshHdfcOrder } from "../services/hdfc.js";
 
 // In-memory order store -- INTENTIONALLY EPHEMERAL, NOT A BUG.
 //
@@ -44,9 +45,11 @@ router.post("/", (req, res) => {
   res.json(order);
 });
 
-router.get("/:id", (req, res) => {
+router.get("/:id", async (req, res) => {
   const order = orders.get(req.params.id);
   if (!order) return res.status(404).json({ error: "Order not found." });
+  // Pending HDFC orders are re-checked against HDFC's Order Status API (throttled).
+  await refreshHdfcOrder(order);
   res.json(order);
 });
 

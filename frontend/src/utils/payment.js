@@ -10,13 +10,22 @@ export const PAYMENT_PROVIDERS = [
   { id: "payu", name: "PayU", blurb: "UPI, cards and net banking" },
 ];
 
+// Offered only when the backend reports it available (flag + config).
+export const HDFC_UPI_PROVIDER = { id: "hdfc", name: "UPI — HDFC", blurb: "Pay with any UPI app" };
+
+/** Providers to show at checkout. */
+export const checkoutProviders = ({ hdfcEnabled = false } = {}) =>
+  hdfcEnabled ? [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER] : PAYMENT_PROVIDERS;
+
 export const DEFAULT_PAYMENT_PROVIDER = "airpay";
 
+const ALL_PROVIDERS = [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER];
+
 export const isValidProvider = (id) =>
-  PAYMENT_PROVIDERS.some((p) => p.id === id);
+  ALL_PROVIDERS.some((p) => p.id === id);
 
 export const providerName = (id) =>
-  PAYMENT_PROVIDERS.find((p) => p.id === id)?.name || "";
+  ALL_PROVIDERS.find((p) => p.id === id)?.name || "";
 
 /**
  * Build a hidden form from a signed gateway payload and submit it.

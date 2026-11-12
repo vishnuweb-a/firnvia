@@ -5,11 +5,11 @@ import { PAYMENT_PROVIDERS } from "../utils/payment.js";
  * a real radio input, so the whole card is clickable and keyboard arrows move
  * between options without any custom key handling.
  */
-export default function PaymentMethodSelector({ value, onChange, disabled }) {
+export default function PaymentMethodSelector({ value, onChange, disabled, providers = PAYMENT_PROVIDERS }) {
   return (
     <fieldset className="pay-methods" disabled={disabled}>
       <legend>Payment method</legend>
-      {PAYMENT_PROVIDERS.map((p) => (
+      {providers.map((p) => (
         <label
           key={p.id}
           className={`pay-method${value === p.id ? " is-selected" : ""}`}

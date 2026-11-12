@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import App from "../App.jsx";
 import Footer from "../components/Footer.jsx";
@@ -7,6 +7,7 @@ import { useCart } from "../context/CartContext.jsx";
 import { api } from "../api.js";
 import {
   DEFAULT_PAYMENT_PROVIDER,
+  checkoutProviders,
   handleCheckoutResult,
   providerName,
 } from "../utils/payment.js";
@@ -21,6 +22,16 @@ export default function Checkout() {
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [hdfcEnabled, setHdfcEnabled] = useState(false);
+
+  // The backend decides; any error keeps the HDFC option hidden.
+  useEffect(() => {
+    let live = true;
+    api.hdfcAvailability()
+      .then((r) => { if (live) setHdfcEnabled(r?.enabled === true); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const change = (e) => setBuyer({ ...buyer, [e.target.name]: e.target.value });
 
@@ -96,7 +107,7 @@ export default function Checkout() {
                 ))}
                 <div className="summary-total" style={{ marginBottom: 22 }}><span>Total</span><span>{inr(total)}</span></div>
 
-                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} />
+                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled })} />
 
                 <div className="consent">
                   <input id="agree" type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} aria-describedby="agree-help" />

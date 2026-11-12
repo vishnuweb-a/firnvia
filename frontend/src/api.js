@@ -25,6 +25,8 @@ const initiators = {
     req("/payment/sabpaisa/initiate", { method: "POST", body: { orderId } }),
   payu: (orderId) =>
     req("/payment/payu/initiate", { method: "POST", body: { orderId } }),
+  hdfc: (orderId) =>
+    req("/payment/hdfc/initiate", { method: "POST", body: { orderId } }),
 };
 
 export const api = {
@@ -32,6 +34,7 @@ export const api = {
   createOrder: (items, buyer) =>
     req("/orders", { method: "POST", body: { items, buyer } }),
   getOrder: (id) => req(`/orders/${id}`),
+  hdfcAvailability: () => req("/payment/hdfc/availability"),
   initiateAirPay: (orderId) => initiators.airpay(orderId),
   initiateSabPaisa: (orderId) => initiators.sabpaisa(orderId),
   initiatePayU: (orderId) => initiators.payu(orderId),

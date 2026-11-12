@@ -13,6 +13,10 @@
       "destination": "https://api.firvanra.online/callback/cpm/arp_firvanra/collection"
     },
     {
+      "source": "/payments/hdfc/return",
+      "destination": "https://api.firvanra.online/payments/hdfc/return"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
