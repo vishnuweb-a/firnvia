@@ -9,7 +9,7 @@ export const products = [
     title: "Website Redesign Mini",
     blurb:
       "A modern, clean refresh that improves visual appeal, mobile responsiveness, and overall user experience.",
-    price: 849,
+    price: 1,
     image: "/img/services/redesign.png",
   },
   {

@@ -97,7 +97,7 @@ export default function OrderStatus() {
                 (Simulated payment — add AirPay credentials to process real payments.)
               </p>
             )}
-            <p className="lead" style={{ margin: "0 auto" }}>Order ID: <b>{id}</b></p>
+            <p className="lead" style={{ margin: "0 auto" }}>Order ID: <b className="order-id">{id}</b></p>
             {view.note && (
               <p className="lead" style={{ margin: "14px auto 0" }}>{view.note}</p>
             )}
@@ -122,7 +122,7 @@ export default function OrderStatus() {
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", marginTop: 28 }}>
+            <div className="status-actions">
               {status === "failed" && (
                 // Back to checkout with the cart intact: a retry must create a
                 // fresh backend payment attempt, never replay the old form.

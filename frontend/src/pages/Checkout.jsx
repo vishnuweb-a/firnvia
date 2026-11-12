@@ -87,7 +87,7 @@ export default function Checkout() {
           {items.length === 0 ? (
             <p className="lead">Your cart is empty. <a href="/" style={{ color: "var(--accent-deep)" }}>Browse services</a>.</p>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 30, alignItems: "start" }}>
+            <div className="checkout-grid">
               <div className="panel">
                 <h3 style={{ marginBottom: 18 }}>Billing details</h3>
                 {error && <div className="notice err">{error}</div>}

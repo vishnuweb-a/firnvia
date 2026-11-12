@@ -186,6 +186,26 @@ h2.section-title { font-size: clamp(1.8rem, 3.4vw, 2.7rem); font-weight: 800; ma
 .status-paid { background: #e6faf7; color: var(--accent-deep); }
 .status-failed { background: #ffecea; color: #c0392b; }
 .status-pending { background: #fff4e0; color: #b7791f; }
+.checkout-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 30px; align-items: start; }
+.checkout-grid > * { min-width: 0; }
+.panel { overflow-wrap: break-word; }
+.panel .btn { justify-content: center; text-align: center; }
+.summary-line, .summary-total { gap: 16px; }
+.summary-line span:first-child, .summary-total span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.summary-line span:last-child, .summary-total span:last-child { flex: none; white-space: nowrap; }
+.order-id { overflow-wrap: anywhere; }
+.status-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 28px; }
+.hamburger { min-width: 44px; min-height: 44px; }
+@media (max-width: 800px) {
+  .checkout-grid { grid-template-columns: 1fr; gap: 20px; }
+}
+@media (max-width: 560px) {
+  .page { padding: 32px 0; }
+  .panel { padding: 20px; }
+  .field input, .field textarea { font-size: 16px; } /* iOS zooms the page on focus below 16px */
+  .consent { font-size: 0.9rem; }
+  .status-actions .btn { width: 100%; }
+}
 
 @media (max-width: 900px) {
   .hero-grid, .contact-grid { grid-template-columns: 1fr; }
@@ -223,7 +243,8 @@ h2.section-title { font-size: clamp(1.8rem, 3.4vw, 2.7rem); font-weight: 800; ma
 .pay-method input { width: 18px; height: 18px; accent-color: var(--accent-deep); cursor: pointer; flex: none; }
 .pay-methods[disabled] .pay-method,
 .pay-methods[disabled] .pay-method input { cursor: not-allowed; }
-.pay-method-text { display: flex; flex-direction: column; }
+.pay-method { min-height: 44px; }
+.pay-method-text { display: flex; flex-direction: column; min-width: 0; }
 .pay-method-name { font-family: var(--display); font-weight: 600; font-size: 0.98rem; }
 .pay-method-blurb { font-size: 0.82rem; color: var(--muted); }
 

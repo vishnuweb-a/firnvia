@@ -352,7 +352,7 @@ test("a tampered PayU callback is rejected and changes nothing", async () => {
   const order = await createOrder();
   const checkout = await (await postJson("/api/payment/payu/initiate", { orderId: order.id })).json();
   const tampered = payuSigned(order, checkout.fields.txnid, checkout.fields.amount);
-  tampered.amount = "1.00"; // after hashing: the reverse hash no longer matches
+  tampered.amount = "999999.00"; // after hashing: the reverse hash no longer matches
 
   const res = await postForm("/api/payment/payu/callback", tampered);
   assert.equal(res.status, 400);
