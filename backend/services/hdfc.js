@@ -12,6 +12,8 @@
 // UPI-only is enforced with HDFC's documented payment locking ("UPI: Display
 // only UPI"): payment_filter { allowDefaultOptions:false, options:[UPI] }, sent
 // on every session. A CHARGED order paid by any other method type is flagged.
+// Sandbox-only test mode (HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST=true, honoured
+// only with ENV=sandbox on the UAT host) adds CARD to the same locked filter.
 //
 // Every function reads config per call so tests and env changes take effect
 // without re-importing. Secrets are never logged or returned.
@@ -32,6 +34,18 @@ export const UPI_ONLY_PAYMENT_FILTER = Object.freeze({
   allowDefaultOptions: false,
   options: [{ paymentMethodType: "UPI", enable: true }],
 });
+export const SANDBOX_CARD_TEST_PAYMENT_FILTER = Object.freeze({
+  allowDefaultOptions: false,
+  options: [{ paymentMethodType: "UPI", enable: true }, { paymentMethodType: "CARD", enable: true }],
+});
+
+/** UPI-only, unless the explicit card-test flag is on AND this is the sandbox (UAT host). */
+export function hdfcPaymentFilter(cfg = hdfcConfig()) {
+  let host = null;
+  try { host = new URL(cfg.baseUrl).host; } catch { /* invalid */ }
+  return cfg.sandboxCardTest && cfg.env === "sandbox" && host === ENV_HOSTS.sandbox
+    ? SANDBOX_CARD_TEST_PAYMENT_FILTER : UPI_ONLY_PAYMENT_FILTER;
+}
 
 const env = (name) => (process.env[name] || "").trim();
 const REQUIRED_ENV = {
@@ -50,6 +64,7 @@ export function hdfcConfig() {
   cfg.env = env("HDFC_SMARTGATEWAY_ENV").toLowerCase();
   cfg.enabled = env("HDFC_SMARTGATEWAY_ENABLED").toLowerCase() === "true";
   cfg.upiOnly = env("HDFC_SMARTGATEWAY_UPI_ONLY").toLowerCase() === "true";
+  cfg.sandboxCardTest = env("HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST").toLowerCase() === "true";
   cfg.logging = env("HDFC_SMARTGATEWAY_ENABLE_LOGGING").toLowerCase() === "true";
   cfg.webhookUsername = env("HDFC_SMARTGATEWAY_WEBHOOK_USERNAME");
   cfg.webhookPassword = env("HDFC_SMARTGATEWAY_WEBHOOK_PASSWORD");
@@ -188,6 +203,9 @@ export async function createSession(order, cfg = hdfcConfig()) {
   const [first, ...rest] = nameSafe(buyer.firstName).split(/\s+/);
   const hdfcOrderId = newHdfcOrderId();
   const customerId = hdfcCustomerId(email);
+  const paymentFilter = hdfcPaymentFilter(cfg);
+  if (cfg.sandboxCardTest && paymentFilter === UPI_ONLY_PAYMENT_FILTER)
+    console.warn("[hdfc session] SANDBOX_CARD_TEST ignored outside sandbox; UPI-only");
   const body = {
     order_id: hdfcOrderId,
     amount,
@@ -201,7 +219,7 @@ export async function createSession(order, cfg = hdfcConfig()) {
     description: "Firvanra order payment",
     first_name: first || "Customer",
     last_name: nameSafe(buyer.lastName) || rest.join(" ") || "NA",
-    payment_filter: UPI_ONLY_PAYMENT_FILTER,
+    payment_filter: paymentFilter,
   };
 
   let res;
@@ -223,7 +241,8 @@ export async function createSession(order, cfg = hdfcConfig()) {
   try { const u = new URL(link); linkOk = u.protocol === "https:" && u.host === new URL(cfg.baseUrl).host; } catch { /* invalid */ }
   if (!linkOk) throw new Error("HDFC session failed: unexpected payment link");
 
-  return { hdfcOrderId, amount, customerId, checkoutUrl: link, providerOrderRef: data.id ? String(data.id) : null };
+  return { hdfcOrderId, amount, customerId, checkoutUrl: link, providerOrderRef: data.id ? String(data.id) : null,
+    allowedMethods: paymentFilter.options.map((o) => o.paymentMethodType) };
 }
 
 export class HdfcInputError extends Error {}
@@ -342,7 +361,8 @@ export function applyHdfcStatus(order, attempt, record, cfg = hdfcConfig()) {
 
     attempt.verified = true;
     attempt.verifiedAmount = amount;
-    if (attempt.paymentMethodType !== "UPI") {
+    // allowedMethods is set at session time; older attempts default to UPI-only.
+    if (!(attempt.allowedMethods || ["UPI"]).includes(attempt.paymentMethodType)) {
       // Payment locking should make this impossible; money was still taken.
       attempt.nonUpiPayment = true;
       console.warn("[hdfc] CHARGED with non-UPI method type for", order.id);

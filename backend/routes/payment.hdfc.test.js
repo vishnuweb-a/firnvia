@@ -27,7 +27,7 @@ Object.assign(process.env, CFG, { VERCEL: "1", FRONTEND_URL: "https://firvanra.o
 const axios = (await import("axios")).default;
 const app = (await import("../server.js")).default;
 const { orders } = await import("./orders.js");
-const { verifyReturnSignature, UPI_ONLY_PAYMENT_FILTER, classifyHdfcStatus } =
+const { verifyReturnSignature, UPI_ONLY_PAYMENT_FILTER, SANDBOX_CARD_TEST_PAYMENT_FILTER, classifyHdfcStatus } =
   await import("../services/hdfc.js");
 
 // ── HDFC mock ───────────────────────────────────────────────────────────────
@@ -37,11 +37,12 @@ let sessionBehaviour = null;
 
 mock.method(axios, "post", async (url, body, opts) => {
   calls.push({ method: "POST", url, body, headers: opts?.headers });
-  if (url === "https://smartgateway.hdfc.bank.in/session") {
+  const host = ["smartgateway.hdfc.bank.in", "smartgateway.hdfcuat.bank.in"].find((h) => url === `https://${h}/session`);
+  if (host) {
     if (sessionBehaviour) return sessionBehaviour(body);
     book.set(body.order_id, { order_id: body.order_id, status: "NEW", status_id: 10, amount: Number(body.amount), currency: "INR", merchant_id: "TESTMID" });
     return { data: { status: "NEW", id: "ordeh_x", order_id: body.order_id,
-      payment_links: { web: `https://smartgateway.hdfc.bank.in/orders/ordeh_x/payment-page` } } };
+      payment_links: { web: `https://${host}/orders/ordeh_x/payment-page` } } };
   }
   throw new Error(`unexpected axios.post ${url}`);
 });
@@ -351,6 +352,54 @@ test("non-UPI CHARGED is settled but flagged", async () => {
   await webhook(hdfcId);
   assert.equal(order.status, "paid");
   assert.equal(order.hdfcAttempts[0].nonUpiPayment, true);
+});
+
+// ── sandbox card test mode ──────────────────────────────────────────────────
+const SANDBOX = { HDFC_SMARTGATEWAY_ENV: "sandbox", HDFC_SMARTGATEWAY_BASE_URL: "https://smartgateway.hdfcuat.bank.in",
+  HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST: "true" };
+const sessionFilter = () => calls.find((c) => c.url.endsWith("/session")).body.payment_filter;
+
+test("sandbox card test: UPI + CARD locked filter on the UAT host; CARD charge not flagged", async () => {
+  Object.assign(process.env, SANDBOX);
+  try {
+    const { order, hdfcId, body } = await started();
+    assert.equal(body.checkoutUrl, "https://smartgateway.hdfcuat.bank.in/orders/ordeh_x/payment-page");
+    assert.deepEqual(sessionFilter(), { allowDefaultOptions: false,
+      options: [{ paymentMethodType: "UPI", enable: true }, { paymentMethodType: "CARD", enable: true }] });
+    assert.deepEqual(sessionFilter(), SANDBOX_CARD_TEST_PAYMENT_FILTER);
+    book.set(hdfcId, charged(hdfcId, { payment_method_type: "CARD" }));
+    await webhook(hdfcId);
+    assert.equal(order.status, "paid");
+    assert.equal(order.hdfcAttempts[0].nonUpiPayment, undefined);
+    // Anything outside UPI/CARD is still flagged.
+    const b = await started();
+    book.set(b.hdfcId, charged(b.hdfcId, { payment_method_type: "NB" }));
+    await webhook(b.hdfcId);
+    assert.equal(b.order.hdfcAttempts[0].nonUpiPayment, true);
+  } finally { delete process.env.HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST; }
+});
+
+test("sandbox card test still requires UPI_ONLY=true", async () => {
+  Object.assign(process.env, SANDBOX, { HDFC_SMARTGATEWAY_UPI_ONLY: "false" });
+  try { assert.equal((await initiate(localOrder().id)).status, 503); }
+  finally { delete process.env.HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST; }
+});
+
+test("card test flag is ignored in production; sandbox without flag is UPI-only", async () => {
+  process.env.HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST = "true"; // production env from CFG
+  const warn = mock.method(console, "warn", () => {});
+  try {
+    const { order, hdfcId } = await started();
+    assert.deepEqual(sessionFilter(), UPI_ONLY_PAYMENT_FILTER);
+    book.set(hdfcId, charged(hdfcId, { payment_method_type: "CARD" }));
+    await webhook(hdfcId);
+    assert.equal(order.hdfcAttempts[0].nonUpiPayment, true);
+  } finally { warn.mock.restore(); delete process.env.HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST; }
+  calls.length = 0;
+  Object.assign(process.env, SANDBOX);
+  delete process.env.HDFC_SMARTGATEWAY_SANDBOX_CARD_TEST;
+  await started();
+  assert.deepEqual(sessionFilter(), UPI_ONLY_PAYMENT_FILTER);
 });
 
 // ── delayed results / retries ───────────────────────────────────────────────

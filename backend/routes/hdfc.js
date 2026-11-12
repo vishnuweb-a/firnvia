@@ -100,6 +100,7 @@ router.post("/initiate", async (req, res) => {
       customerId: session.customerId,
       amount: session.amount,
       currency: "INR",
+      allowedMethods: session.allowedMethods,
       providerStatus: "NEW",
       verified: false,
       createdAt: now,
