@@ -177,6 +177,30 @@ test("session: invalid phone 400; HDFC error 502; foreign payment link refused",
   assert.equal((await initiate(localOrder().id)).status, 502);
 });
 
+test("session 401: sanitized diagnostics logged, no secrets or PII", async () => {
+  process.env.HDFC_SMARTGATEWAY_API_KEY = ' "fake-api-key" ';
+  sessionBehaviour = () => {
+    const e = new Error("x");
+    e.response = { status: 401, headers: { "x-request-id": "req-123" },
+      data: { status: "error", error_code: "access_denied", error_message: "Bad key for a@b.co 9000000000" } };
+    throw e;
+  };
+  const logs = [];
+  const warn = mock.method(console, "warn", (...a) => logs.push(a.join(" ")));
+  try { assert.equal((await initiate(localOrder().id)).status, 502); }
+  finally { warn.mock.restore(); }
+  const line = logs.find((l) => l.startsWith("[hdfc session] failed:"));
+  const diag = JSON.parse(line.slice("[hdfc session] failed: ".length));
+  assert.equal(diag.status, 401);
+  assert.equal(diag.error_code, "access_denied");
+  assert.equal(diag.request_id, "req-123");
+  assert.equal(diag.host, "smartgateway.hdfc.bank.in");
+  assert.deepEqual(diag.api_key, { len: 14, ws: true, quoted: true });
+  const auth = calls.find((c) => c.url.endsWith("/session")).headers.Authorization;
+  for (const secret of ["fake-api-key", auth.slice(6), "fake-response-key", "hookpass", "a@b.co", "9000000000"])
+    assert.ok(!line.includes(secret), `leaked: ${secret}`);
+});
+
 test("initiate: unknown order 404, paid order 409", async () => {
   assert.equal((await initiate("FIR-nope")).status, 404);
   const o = localOrder(); o.status = "paid";

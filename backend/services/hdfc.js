@@ -106,6 +106,40 @@ function failureReason(err) {
   return "network";
 }
 
+// Printable, bounded, with emails / long digit runs masked (provider text may echo input).
+const clip = (v, n) => v === undefined || v === null || v === "" ? null :
+  String(v).replace(/[^\x20-\x7E]/g, "").replace(/\S+@\S+/g, "[email]").replace(/\d{8,}/g, "[n]").slice(0, n);
+// Shape of a raw env value (before trim) — never the value itself.
+const envShape = (name) => {
+  const v = process.env[name] || "";
+  return { len: v.trim().length, ws: v !== v.trim(), quoted: /^\s*["'`]|["'`]\s*$/.test(v) };
+};
+
+/** Sanitized session-failure context: provider error fields + config shape. No secrets, no PII. */
+export function sessionFailureDiagnostics(err, cfg) {
+  const r = err?.response;
+  const d = r?.data && typeof r.data === "object" ? r.data : {};
+  const h = r?.headers || {};
+  const idKey = Object.keys(h).find((k) => /request-?id|correlation-?id|trace-?id/i.test(k));
+  let host = null, redirectHost = null;
+  try { host = new URL(cfg.baseUrl).host; } catch { /* invalid */ }
+  try { if (h.location) redirectHost = new URL(h.location, cfg.baseUrl).host; } catch { /* invalid */ }
+  return {
+    reason: failureReason(err),
+    status: r?.status ?? null,
+    error_code: clip(d.error_code, 60),
+    error_message: clip(d.error_message ?? d.user_message, 160),
+    request_id: idKey ? clip(h[idKey], 80) : null,
+    redirect_host: redirectHost,
+    host,
+    env: cfg.env,
+    api_key: envShape(REQUIRED_ENV.apiKey),
+    merchant_id: envShape(REQUIRED_ENV.merchantId),
+    client_id_is_merchant_id: cfg.paymentPageClientId === cfg.merchantId,
+    commit: clip(process.env.VERCEL_GIT_COMMIT_SHA, 7),
+  };
+}
+
 /** Order ids: alphanumeric, < 21 chars, non-sequential (session API docs). */
 export function newHdfcOrderId() {
   return "FIR" + crypto.randomBytes(12).toString("base64").replace(/[^A-Za-z0-9]/g, "").slice(0, 15).padEnd(15, "0");
@@ -173,10 +207,11 @@ export async function createSession(order, cfg = hdfcConfig()) {
   let res;
   try {
     res = await axios.post(`${cfg.baseUrl}/session`, body, {
-      headers: headers(cfg, customerId), timeout: HTTP_TIMEOUT_MS,
+      // A redirect would drop Authorization on a host change; surface it as http_3xx instead.
+      headers: headers(cfg, customerId), timeout: HTTP_TIMEOUT_MS, maxRedirects: 0,
     });
   } catch (err) {
-    if (cfg.logging) console.warn("[hdfc session] failed:", failureReason(err), err?.response?.data?.error_code || "");
+    console.warn("[hdfc session] failed:", JSON.stringify(sessionFailureDiagnostics(err, cfg)));
     throw new Error(`HDFC session failed: ${failureReason(err)}`);
   }
 
