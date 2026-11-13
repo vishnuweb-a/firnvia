@@ -14,7 +14,7 @@ const sections = [
   </> },
   { id: "categories", title: "Personal Data We Collect", body: <>
     <ul>
-      <li><strong>Contact details</strong> you give in the contact form: name, email address, phone number and your message.</li>
+      <li><strong>Contact details</strong> you give when you email or phone us: your name, email address, phone number and what you tell us.</li>
       <li><strong>Order details</strong> you give at checkout: first and last name, email, phone number, and the items you order and their price.</li>
       <li><strong>Payment and transaction identifiers</strong>: order ID, gateway transaction references and payment status returned by the Payment Gateway.</li>
       <li><strong>Technical data</strong>: your IP address and request details handled by our hosting infrastructure when you visit the website.</li>
@@ -22,14 +22,14 @@ const sections = [
     </ul>
     <p>We do not collect your card number, CVV, UPI PIN, net-banking credentials or OTP. You enter those on the Payment Gateway's pages, not ours.</p>
   </> },
-  { id: "contact-form", title: "Contact Form Data", body: <>
-    <p>When you submit the contact form, your name, email, phone and message are sent to our server. In the current version of the website the server writes this information to its operational logs, and does not save it in a database or send it on by email. <Tbc>Owner to confirm how contact messages are actually received and followed up, since logs alone are not a reliable inbox.</Tbc></p>
+  { id: "enquiries", title: "Enquiries by Email and Phone", body: <>
+    <p>The website does not have a contact form. When you email or phone us, we receive the contact details and information you choose to give, and we use them to reply to you and to handle your request. <Tbc>Owner to confirm who monitors the mailbox and phone line. The backend still exposes POST /api/contact, which writes submissions to server logs; no page on the site calls it.</Tbc></p>
   </> },
   { id: "checkout", title: "Checkout and Order Information", body: <>
     <p>When you check out, we create an order that holds your name, email, phone, the items and total. Orders are currently held in the memory of the server process. They are not saved to a database and can be lost when the server restarts or scales. For that reason we may ask you for your order ID or payment proof if you contact us about an order.</p>
   </> },
   { id: "payments", title: "Payment and Transaction Identifiers", body: <>
-    <p>We receive the outcome of your payment and identifiers such as the transaction ID from the Payment Gateway you chose (AirPay, SabPaisa or PayU). We use these to match your payment to your order and to investigate payment problems.</p>
+    <p>We receive the outcome of your payment and identifiers such as the transaction ID from the Payment Gateway you chose at checkout. We use these to match your payment to your order and to investigate payment problems.</p>
   </> },
   { id: "technical", title: "Website Technical Data", body: <>
     <p>Our website loads web fonts (Sora and Inter) from Google Fonts. When your browser requests them, Google receives your IP address and browser details under its own privacy policy. Our hosting providers process standard request data to serve the website and keep it secure.</p>
@@ -54,13 +54,13 @@ const sections = [
     <p>We use your data because you give it to us for a purpose you can see, such as ordering a service or sending an enquiry, because it is needed to perform your order, and because the law requires certain records. Your acceptance of the {terms} at checkout is agreement to a contract; it is not a general consent to any other use of your personal data. The website does not currently record consent in a durable consent log. <Tbc>Owner decision needed before the DPDP consent and notice duties begin.</Tbc></p>
   </> },
   { id: "gateways", title: "Payment Gateway Sharing", body: <>
-    <p>To complete payment, your order amount, order ID and the contact details you gave (name, email, phone) are shared with the Payment Gateway you select: AirPay, SabPaisa or PayU. Each gateway is responsible for its own handling of data under its own privacy policy.</p>
+    <p>To complete payment, your order amount, order ID and the contact details you gave (name, email, phone) are shared with the Payment Gateway you select. The gateways currently offered are named on the checkout page. Each gateway is responsible for its own handling of data under its own privacy policy.</p>
   </> },
   { id: "hosting", title: "Hosting and Infrastructure Providers", body: <>
     <p>The website and its API are hosted using Vercel infrastructure, and the API is served at api.firvanra.online. These providers process data on our behalf to run the service. <Tbc>Owner to confirm the hosting regions and any other providers used.</Tbc></p>
   </> },
   { id: "callbacks", title: "External Callback and Webhook Recipients", body: <>
-    <p>We do not only keep payment data to ourselves. For SabPaisa and AirPay payments, after we verify a payment notification from the gateway, we forward the notification to kkchat.in, an external service. That notification can include transaction details and the payer details the gateway supplies. PayU notifications are not forwarded there. <Tbc>Owner to state who operates kkchat.in, why the data is sent, and the basis for sharing it. This is unconfirmed in the project code.</Tbc></p>
+    <p>We do not only keep payment data to ourselves. For payments made with SabPaisa, and with the checkout option labelled "AirPay 2", after we verify a payment notification from the gateway we forward the notification to kkchat.in, an external service. That notification can include transaction details and the payer details the gateway supplies. Notifications for the other payment options are not forwarded there. <Tbc>Owner to state who operates kkchat.in, why the data is sent, and the basis for sharing it. This is unconfirmed in the project code.</Tbc></p>
   </> },
   { id: "retention", title: "Data Retention", body: <>
     <p>We have not set an automated retention schedule and the website does not delete data automatically. Orders held in server memory disappear when the server process is replaced. Server logs, gateway records and any emails remain with us or the providers until deleted. We keep records we are legally required to keep, such as payment and tax records, for as long as the law requires. <Tbc>Owner to approve a retention period for each category of data.</Tbc></p>

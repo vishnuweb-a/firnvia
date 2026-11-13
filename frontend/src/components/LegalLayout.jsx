@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import App from "../App.jsx";
 import Footer from "./Footer.jsx";
-import { COMPANY, LEGAL_VERSION, DRAFT_PREPARED, EFFECTIVE_DATE } from "../legal/company.js";
+import { COMPANY, POLICIES, LEGAL_VERSION, DRAFT_PREPARED, EFFECTIVE_DATE } from "../legal/company.js";
 
 // Owner-review notes are no longer shown on the site; they are tracked in
 // docs/LEGAL_OWNER_DECISIONS.md. Kept as a no-op so the markers stay in the source.
@@ -44,16 +44,11 @@ function PolicyTableOfContents({ sections }) {
   );
 }
 
-const OTHERS = [
-  ["/terms-and-conditions", "Terms & Conditions"],
-  ["/refund-and-cancellation-policy", "Refund & Cancellation Policy"],
-  ["/privacy-policy", "Privacy Policy"],
-];
+export { POLICIES };
 
 // sections: [{ id, title, body: ReactNode }]
 export default function LegalPageLayout({ title, intro, sections, path }) {
   const [open, setOpen] = useState(false);
-  useEffect(() => { document.title = `${title} — Firvanra`; }, [title]);
   return (
     <App>
       <main className="page legal">
@@ -79,9 +74,10 @@ export default function LegalPageLayout({ title, intro, sections, path }) {
             ))}
             <p className="legal-also">
               Related policies:{" "}
-              {OTHERS.filter(([p]) => p !== path).map(([p, l], i) => (
-                <span key={p}>{i > 0 && " · "}<Link to={p}>{l}</Link></span>
+              {POLICIES.filter(([p]) => p !== path).map(([p, l]) => (
+                <span key={p}><Link to={p}>{l}</Link> · </span>
               ))}
+              <Link to="/policies">All policies</Link>
             </p>
           </article>
         </div>

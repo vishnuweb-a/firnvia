@@ -1,9 +1,6 @@
-import { useCart } from "../context/CartContext.jsx";
-
-const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
+import ProductCard from "./ProductCard.jsx";
 
 export default function Services({ services, onAdded }) {
-  const { add } = useCart();
   return (
     <section className="section" id="services">
       <div className="container">
@@ -13,19 +10,7 @@ export default function Services({ services, onAdded }) {
           End-to-end, 360° services that give you complete solutions under one roof.
         </p>
         <div className="grid grid-3" style={{ marginTop: 36 }}>
-          {services.map((s) => (
-            <article className="card" key={s.id}>
-              <h3>{s.title}</h3>
-              <p>{s.blurb}</p>
-              <div className="price">{inr(s.price)}</div>
-              <button
-                className="btn btn-accent"
-                onClick={() => { add(s); onAdded?.(); }}
-              >
-                Buy now @ {s.price}
-              </button>
-            </article>
-          ))}
+          {services.map((s) => <ProductCard key={s.id} product={s} onAdded={onAdded} />)}
         </div>
       </div>
     </section>

@@ -1,9 +1,7 @@
-import { useCart } from "../context/CartContext.jsx";
-
-const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
+import { Link } from "react-router-dom";
+import ProductCard from "./ProductCard.jsx";
 
 export default function EbookShop({ ebooks, onAdded }) {
-  const { add } = useCart();
   return (
     <section className="section" id="shop" style={{ background: "#eef2fb" }}>
       <div className="container">
@@ -13,21 +11,11 @@ export default function EbookShop({ ebooks, onAdded }) {
           Practical guides for websites, branding, automation, and scalable growth.
         </p>
         <div className="grid grid-4" style={{ marginTop: 36 }}>
-          {ebooks.map((b) => (
-            <article className="card product" key={b.id}>
-              <div className="thumb">
-                {/* Replace with <img src={b.image} alt={b.title} /> */}
-                <span>{b.title}</span>
-              </div>
-              <span className="cat">{b.category}</span>
-              <h3 style={{ fontSize: "1.02rem", margin: "6px 0 4px" }}>{b.title}</h3>
-              <div className="price">{inr(b.price)}</div>
-              <button className="btn btn-accent" onClick={() => { add(b); onAdded?.(); }}>
-                Add to cart
-              </button>
-            </article>
-          ))}
+          {ebooks.map((b) => <ProductCard key={b.id} product={b} onAdded={onAdded} />)}
         </div>
+        <p style={{ marginTop: 28 }}>
+          <Link to="/shop" className="btn btn-primary">View all products</Link>
+        </p>
       </div>
     </section>
   );

@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 export default function Hero() {
   return (
     <section className="hero" id="home">
@@ -12,14 +14,13 @@ export default function Hero() {
             solutions — from first sketch to launch and beyond.
           </p>
           <div className="hero-cta">
-            <a href="#about" className="btn btn-primary">Know more</a>
-            <a href="#contact" className="btn btn-ghost">Contact us</a>
+            <Link to="/shop" className="btn btn-primary">Browse the shop</Link>
+            <Link to="/about" className="btn btn-ghost">Know more</Link>
           </div>
         </div>
         <div className="hero-art">
           <div className="blob b1" />
           <div className="blob b2" />
-          {/* Replace with the client's hero image: <img src="/img/hero.png" alt="" /> */}
           <div className="tag">Bring excellency with our expertise</div>
         </div>
       </div>

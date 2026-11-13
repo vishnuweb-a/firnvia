@@ -13,7 +13,7 @@ export default function MicroServices() {
       <div className="container">
         <span className="eyebrow">What we do</span>
         <h2 className="section-title">Our micro services</h2>
-        <p className="lead">Focused, fast-turnaround services to support specific needs.</p>
+        <p className="lead">Focused services for specific needs. These are not sold through the cart; contact us to agree scope and price.</p>
         <div className="micro" style={{ marginTop: 36 }}>
           {micro.map((m) => (
             <div className="micro-item" key={m.title}>

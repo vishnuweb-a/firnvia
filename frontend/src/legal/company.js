@@ -16,3 +16,11 @@ export const DRAFT = true;
 export const LEGAL_VERSION = "0.1 (draft)";
 export const DRAFT_PREPARED = "2 November 2026";
 export const EFFECTIVE_DATE = null; // e.g. "1 December 2026" after approval
+
+// Single list of policy pages: header highlight, related-policy links and the /policies hub.
+export const POLICIES = [
+  ["/privacy-policy", "Privacy Policy"],
+  ["/terms-and-conditions", "Terms & Conditions"],
+  ["/shipping-and-delivery-policy", "Shipping & Delivery Policy"],
+  ["/refund-and-cancellation-policy", "Refund & Cancellation Policy"],
+];

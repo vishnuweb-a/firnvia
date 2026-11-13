@@ -1,27 +1,8 @@
-import { useState } from "react";
-import { api } from "../api.js";
+import { COMPANY } from "../legal/company.js";
 
+// No enquiry form: the backend has no way to deliver a message to anyone, so the
+// site offers the email address and phone number from legal/company.js instead.
 export default function Contact() {
-  const [form, setForm] = useState({ firstName: "", email: "", phone: "", message: "" });
-  const [status, setStatus] = useState(null); // { ok, msg }
-  const [sending, setSending] = useState(false);
-
-  const change = (e) => setForm({ ...form, [e.target.name]: e.target.value });
-
-  const submit = async () => {
-    setSending(true);
-    setStatus(null);
-    try {
-      const r = await api.contact(form);
-      setStatus({ ok: true, msg: r.message });
-      setForm({ firstName: "", email: "", phone: "", message: "" });
-    } catch (e) {
-      setStatus({ ok: false, msg: e.message });
-    } finally {
-      setSending(false);
-    }
-  };
-
   return (
     <section className="section" id="contact" style={{ background: "#eef2fb" }}>
       <div className="container contact-grid">
@@ -29,49 +10,36 @@ export default function Contact() {
           <span className="eyebrow">Get in touch</span>
           <h2 className="section-title">Have a question?</h2>
           <div className="info-row">
-            <div className="ic">📍</div>
+            <div className="ic" aria-hidden="true">📍</div>
             <div>
               <strong>Address</strong>
               <p style={{ color: "var(--muted)" }}>
-                Firvanra Solutions Pvt. Ltd., UG-2, Vijay Block, Laxmi Nagar,
-                East Delhi, Delhi 110092
+                {COMPANY.legalName}, {COMPANY.address}
               </p>
             </div>
           </div>
           <div className="info-row">
-            <div className="ic">✉️</div>
-            <div><strong>Email</strong><p style={{ color: "var(--muted)" }}>firvanra@gmail.com</p></div>
+            <div className="ic" aria-hidden="true">✉️</div>
+            <div><strong>Email</strong><p><a className="text-link" href={`mailto:${COMPANY.email}`}>{COMPANY.email}</a></p></div>
           </div>
           <div className="info-row">
-            <div className="ic">📞</div>
-            <div><strong>Phone</strong><p style={{ color: "var(--muted)" }}>9355124568</p></div>
+            <div className="ic" aria-hidden="true">📞</div>
+            <div><strong>Phone</strong><p><a className="text-link" href={`tel:+91${COMPANY.phone}`}>{COMPANY.phone}</a></p></div>
           </div>
         </div>
 
         <div className="form">
-          {status && (
-            <div className={`notice ${status.ok ? "ok" : "err"}`}>{status.msg}</div>
-          )}
-          <div className="field">
-            <label>First name *</label>
-            <input name="firstName" value={form.firstName} onChange={change} />
+          <h3 style={{ marginBottom: 10 }}>How to reach us</h3>
+          <p>This website does not have an online enquiry form. Please email or call us directly.</p>
+          <ul style={{ margin: "12px 0 20px", paddingLeft: "1.3em" }}>
+            <li>For an order, payment or refund, email us and include your order ID (it starts with “FIR-”).</li>
+            <li>Tell us your name and the email address or phone number you used at checkout.</li>
+            <li>Never send a PIN, password, OTP, full card number or CVV.</li>
+          </ul>
+          <div className="card-actions">
+            <a className="btn btn-primary" href={`mailto:${COMPANY.email}`}>Email us</a>
+            <a className="btn btn-ghost" href={`tel:+91${COMPANY.phone}`}>Call {COMPANY.phone}</a>
           </div>
-          <div className="field">
-            <label>Email address *</label>
-            <input name="email" type="email" value={form.email} onChange={change} />
-          </div>
-          <div className="field">
-            <label>Phone number *</label>
-            <input name="phone" value={form.phone} onChange={change} />
-          </div>
-          <div className="field">
-            <label>Message *</label>
-            <textarea name="message" rows="4" maxLength="180" value={form.message} onChange={change} />
-            <small style={{ color: "var(--muted)" }}>{form.message.length} / 180</small>
-          </div>
-          <button className="btn btn-primary" disabled={sending} onClick={submit}>
-            {sending ? "Sending..." : "Submit"}
-          </button>
         </div>
       </div>
     </section>

@@ -48,5 +48,4 @@ export const api = {
   },
   simulatePayment: (orderId) =>
     req(`/payment/airpay/simulate/${orderId}`, { method: "POST" }),
-  contact: (data) => req("/contact", { method: "POST", body: data }),
 };

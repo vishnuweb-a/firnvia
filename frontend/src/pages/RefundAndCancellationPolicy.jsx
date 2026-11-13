@@ -12,7 +12,7 @@ const sections = [
     <p>Today, cancellation and refund requests are handled manually by our team by email. The website has no self-service cancellation or refund feature, no refund dashboard and no automated refund processing. Refunds are issued only after a person at {COMPANY.brand} has reviewed and approved the request.</p>
   </> },
   { id: "applicability", title: "Applicability", body: <>
-    <p>This policy applies to orders for technology services, website and software development, website maintenance, consulting, and digital goods such as ebooks, paid through the payment gateways offered on our website (currently AirPay, SabPaisa and PayU). Where a signed or accepted Project Agreement says something different on a particular point, it applies to that point, but never in a way that removes a right you have under mandatory law.</p>
+    <p>This policy applies to orders for technology services, website and software development, website maintenance, consulting, and digital goods such as ebooks, paid through the payment gateways offered at checkout on our website. Where a signed or accepted Project Agreement says something different on a particular point, it applies to that point, but never in a way that removes a right you have under mandatory law.</p>
   </> },
   { id: "principles", title: "General Refund Principles", body: <>
     <ul>
@@ -53,6 +53,9 @@ const sections = [
     </ul>
     <p>This restriction on change-of-mind refunds is shown at checkout before you pay and does not limit your rights under consumer law. Ebooks are currently delivered manually, not by automatic download.</p>
   </> },
+  { id: "returns", title: "Returns and Return Shipping", body: <>
+    <p>We sell services and digital products only. We do not sell or ship physical goods, so there is no item to send back, no return window to meet and no return shipping cost for you or for us. Where a digital product is faulty, is not the one you ordered or was materially misdescribed, the remedies in "Digital Products and Ebooks" above apply. Where a service was not delivered or is deficient, see "Completed Services". How orders reach you is explained in our <Link to="/shipping-and-delivery-policy">Shipping &amp; Delivery Policy</Link>.</p>
+  </> },
   { id: "failed", title: "Failed Transactions", body: <>
     <p>A "failed" or "pending" status on our website is not proof that your money was not debited. Please check your bank, card or UPI app statement. Many failed debits are reversed automatically by your bank or payment provider; the timing is set by them and by banking rules and not by us.</p>
     <p>If money was debited and you have no confirmed order, email {mail} with the details listed under "Refund Request Procedure". We will check the gateway records and then either confirm the order, or refund the amount, or tell you the reversal is with your bank.</p>
@@ -88,13 +91,13 @@ const sections = [
     <p>We do not provide an online refund-tracking page. We will update you by email or phone.</p>
   </> },
   { id: "timing", title: "Refund Processing Time", body: <>
-    <p>A refund involves several different steps, and only the first three are in our control. <Tbc>Owner to approve these proposed targets; they are not yet a commitment.</Tbc></p>
+    <p>A refund involves several different steps, and only the first three are in our control. We have not published fixed timeframes for our own steps. <Tbc>Owner to approve refund service levels (docs/LEGAL_OWNER_DECISIONS.md item 3). Proposed figures stay out of public copy until approved.</Tbc></p>
     <ol>
-      <li><strong>Acknowledgement:</strong> proposed within 2 business days of your request.</li>
-      <li><strong>Eligibility review:</strong> proposed within 7 business days after we have all the information.</li>
-      <li><strong>Refund initiation:</strong> proposed within 5 business days of approval.</li>
+      <li><strong>Acknowledgement:</strong> we confirm that we have received your request.</li>
+      <li><strong>Eligibility review:</strong> carried out once we have all the information.</li>
+      <li><strong>Refund initiation:</strong> we start the refund after approval.</li>
       <li><strong>Payment provider processing:</strong> set by the gateway.</li>
-      <li><strong>Bank credit or reversal:</strong> set by your bank or card issuer; it commonly takes several working days but we cannot promise a date.</li>
+      <li><strong>Bank credit or reversal:</strong> set by your bank or card issuer; we cannot promise a date.</li>
     </ol>
     <p>If a law or regulator sets a mandatory time for a step, that time applies instead.</p>
   </> },

@@ -19,7 +19,7 @@ const sections = [
     <li><strong>Services</strong>: the technology, website, software, maintenance, consulting and related services offered by us.</li>
     <li><strong>Digital Products</strong>: downloadable or electronically supplied content such as ebooks.</li>
     <li><strong>Order</strong>: a request to buy Services or Digital Products placed through the checkout.</li>
-    <li><strong>Payment</strong>: the amount paid for an Order. <strong>Payment Gateway</strong>: a third-party provider that processes the Payment (the website currently offers AirPay, SabPaisa and PayU).</li>
+    <li><strong>Payment</strong>: the amount paid for an Order. <strong>Payment Gateway</strong>: a third-party provider that processes the Payment (the gateways currently offered are shown at checkout, where you choose one).</li>
     <li><strong>Project Agreement</strong>: a written agreement, proposal or statement of work, signed or accepted by both parties, that sets out scope, price or timeline for specific work.</li>
     <li><strong>Deliverables</strong>: the work product we agree to hand over for an Order.</li>
     <li><strong>Refund</strong>: return of money to the Customer. <strong>Cancellation</strong>: withdrawal of an Order before it is fulfilled. Both are explained in the {refund}.</li>
