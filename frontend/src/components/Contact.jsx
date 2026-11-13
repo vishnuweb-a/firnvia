@@ -44,7 +44,7 @@ export default function Contact() {
           </div>
           <div className="info-row">
             <div className="ic">📞</div>
-            <div><strong>Phone</strong><p style={{ color: "var(--muted)" }}>7669438261</p></div>
+            <div><strong>Phone</strong><p style={{ color: "var(--muted)" }}>9355124568</p></div>
           </div>
         </div>
 

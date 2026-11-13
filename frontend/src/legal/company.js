@@ -6,7 +6,7 @@ export const COMPANY = {
   website: "https://firvanra.online",
   address: "UG-2, Vijay Block, Laxmi Nagar, East Delhi, Delhi 110092",
   email: "firvanra@gmail.com",
-  phone: "7669438261",
+  phone: "9355124568",
 };
 
 // Draft state: the owner has not yet approved publication. Set DRAFT to false

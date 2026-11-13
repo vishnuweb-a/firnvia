@@ -30,7 +30,7 @@ export default function Footer() {
             <h4>Contact info</h4>
             <ul>
               <li>UG-2, Vijay Block, Laxmi Nagar, East Delhi, Delhi 110092</li>
-              <li>Phone: <a href="tel:+917669438261">7669438261</a></li>
+              <li>Phone: <a href="tel:+919355124568">9355124568</a></li>
               <li>Email: <a href="mailto:firvanra@gmail.com">firvanra@gmail.com</a></li>
             </ul>
           </div>
