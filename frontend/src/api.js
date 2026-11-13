@@ -8,7 +8,7 @@ async function req(path, opts = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Request failed (${res.status})`);
+    throw Object.assign(new Error(err.error || `Request failed (${res.status})`), { status: res.status });
   }
   return res.json();
 }
@@ -27,6 +27,8 @@ const initiators = {
     req("/payment/payu/initiate", { method: "POST", body: { orderId } }),
   hdfc: (orderId) =>
     req("/payment/hdfc/initiate", { method: "POST", body: { orderId } }),
+  isgpay: (orderId) =>
+    req("/payments/isgpay/create", { method: "POST", body: { orderId } }),
 };
 
 export const api = {
@@ -35,6 +37,7 @@ export const api = {
     req("/orders", { method: "POST", body: { items, buyer } }),
   getOrder: (id) => req(`/orders/${id}`),
   hdfcAvailability: () => req("/payment/hdfc/availability"),
+  isgpayAvailability: () => req("/payments/isgpay/availability"),
   initiateAirPay: (orderId) => initiators.airpay(orderId),
   initiateSabPaisa: (orderId) => initiators.sabpaisa(orderId),
   initiatePayU: (orderId) => initiators.payu(orderId),

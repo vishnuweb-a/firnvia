@@ -27,6 +27,12 @@ const VIEW = {
     title: "We're confirming your payment",
     note: "We're checking with the payment provider. This page updates on its own — it can take a few moments.",
   },
+  // Backend 404: the in-memory order/session is gone (restart, redeploy, other instance).
+  unavailable: {
+    cls: "status-pending", icon: "⚠️", badge: "Payment session unavailable",
+    title: "Status could not be verified",
+    note: "This payment session is no longer available, so we couldn't verify its status. If money was debited, contact firvanra@gmail.com with your payment details. Your cart is still saved.",
+  },
 };
 
 export default function OrderStatus() {
@@ -36,6 +42,7 @@ export default function OrderStatus() {
   const [order, setOrder] = useState(null);
   const [err, setErr] = useState(null);
   const [timedOut, setTimedOut] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const clearedRef = useRef(false);
 
   // Poll GET /api/orders/:id until the backend settles the order. Query
@@ -52,10 +59,13 @@ export default function OrderStatus() {
         if (cancelled) return;
         setOrder(next);
         setErr(null);
+        setUnavailable(false);
         if (isSettled(next.status)) return; // stops on paid and on failed
       } catch (e) {
         if (cancelled) return;
-        setErr("We couldn't load this order right now.");
+        // Not found: say so honestly. Keep polling — another instance may still hold it.
+        if (e.status === 404) setUnavailable(true);
+        else setErr("We couldn't load this order right now.");
       }
       if (Date.now() - startedAt >= POLL_TIMEOUT_MS) {
         setTimedOut(true);
@@ -82,7 +92,7 @@ export default function OrderStatus() {
 
   // Until the backend answers, the order is unconfirmed — never "successful".
   const status = order?.status;
-  const view = VIEW[status] || VIEW.pending;
+  const view = unavailable ? VIEW.unavailable : VIEW[status] || VIEW.pending;
 
   return (
     <App>
@@ -97,11 +107,11 @@ export default function OrderStatus() {
                 (Simulated payment — add AirPay credentials to process real payments.)
               </p>
             )}
-            <p className="lead" style={{ margin: "0 auto" }}>Order ID: <b className="order-id">{id}</b></p>
+            {!unavailable && <p className="lead" style={{ margin: "0 auto" }}>Order ID: <b className="order-id">{id}</b></p>}
             {view.note && (
               <p className="lead" style={{ margin: "14px auto 0" }}>{view.note}</p>
             )}
-            {timedOut && !isSettled(status) && (
+            {timedOut && !unavailable && !isSettled(status) && (
               <p className="lead" style={{ margin: "14px auto 0" }}>
                 This is taking longer than usual. Refresh this page to check again — if money was
                 debited, contact firvanra@gmail.com with your order ID.

@@ -60,6 +60,17 @@ the payment flow, and provider callbacks get clean URLs on the main domain.
 | SabPaisa  | PG 3.0 REST + Transaction Enquiry     | `GET`/`POST /api/payment/sabpaisa/callback` | `POST /api/payment/sabpaisa/webhook` |
 | PayU      | Hosted Checkout (SHA-512 hash)        | `POST /api/payment/payu/callback`       | `POST /api/payment/payu/webhook`       |
 | HDFC SmartGateway (UPI only) | Payment Page, Basic Auth + Order Status API | `GET`/`POST /payments/hdfc/return` | `POST /api/webhooks/hdfc` (Basic auth) |
+| ISGPay (UAT only) | NG Redirection v1.6: AES-256-ECB EncData + SHA-256 SecureHash, Sale Status API | `POST /api/payments/isgpay/return` | `POST /api/payments/isgpay/callback` |
+
+ISGPay is a **UAT demo, not production-ready**. It is off unless `ISGPAY_ENABLED=true`
+(exact string). Only a hash-verified Sale Status response (`ResponseCode=00`, matching
+amount/ids) marks an order paid. Attempts live in process memory, so a restart, redeploy or
+another Vercel instance loses them, and the customer sees "Payment session unavailable".
+The callback URL must be registered with ISGPay separately; setting the env var does not register it.
+`ISGPAY_VERSION` is optional and explicit: unset sends no `Version` (v1.6 tables list none); set
+(the legacy kit uses `1`) adds it to the sale and status requests. It is never retried automatically.
+Sanitized `[isgpay sale_submit|return_received|callback_received|status_request|status_response]`
+log lines carry field names, lengths and check results only, never secrets or customer data.
 
 Signature verification **fails closed** throughout: a callback that arrives
 without a verifiable hash is rejected, never treated as successful.

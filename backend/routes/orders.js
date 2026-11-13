@@ -2,6 +2,7 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { getProduct } from "../data/products.js";
 import { refreshHdfcOrder } from "../services/hdfc.js";
+import { refreshIsgpayOrder } from "../services/isgpay.js";
 
 // In-memory order store -- INTENTIONALLY EPHEMERAL, NOT A BUG.
 //
@@ -50,6 +51,7 @@ router.get("/:id", async (req, res) => {
   if (!order) return res.status(404).json({ error: "Order not found." });
   // Pending HDFC orders are re-checked against HDFC's Order Status API (throttled).
   await refreshHdfcOrder(order);
+  await refreshIsgpayOrder(order); // same, for pending ISGPay orders via the Sale Status API
   res.json(order);
 });
 

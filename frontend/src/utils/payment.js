@@ -13,13 +13,18 @@ export const PAYMENT_PROVIDERS = [
 // Offered only when the backend reports it available (flag + config).
 export const HDFC_UPI_PROVIDER = { id: "hdfc", name: "UPI — HDFC", blurb: "Pay with any UPI app" };
 
+// Offered only when the backend reports it available (ISGPAY_ENABLED + config).
+export const ISGPAY_PROVIDER = { id: "isgpay", name: "ISGPay (UAT)", blurb: "UPI via ISGPay hosted page" };
+
 /** Providers to show at checkout. */
-export const checkoutProviders = ({ hdfcEnabled = false } = {}) =>
-  hdfcEnabled ? [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER] : PAYMENT_PROVIDERS;
+export const checkoutProviders = ({ hdfcEnabled = false, isgpayEnabled = false } = {}) => {
+  if (!hdfcEnabled && !isgpayEnabled) return PAYMENT_PROVIDERS;
+  return [...PAYMENT_PROVIDERS, ...(hdfcEnabled ? [HDFC_UPI_PROVIDER] : []), ...(isgpayEnabled ? [ISGPAY_PROVIDER] : [])];
+};
 
 export const DEFAULT_PAYMENT_PROVIDER = "airpay";
 
-const ALL_PROVIDERS = [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER];
+const ALL_PROVIDERS = [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER, ISGPAY_PROVIDER];
 
 export const isValidProvider = (id) =>
   ALL_PROVIDERS.some((p) => p.id === id);

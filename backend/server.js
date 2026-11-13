@@ -12,6 +12,7 @@ import airpay2, {
   airpay2CallbackMethodNotAllowed,
 } from "./routes/airpay2.js";
 import hdfc, { HDFC_RETURN_PATH, HDFC_WEBHOOK_PATH, hdfcReturn, hdfcWebhook } from "./routes/hdfc.js";
+import isgpay from "./routes/isgpay.js";
 
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
@@ -50,6 +51,8 @@ app.use("/api/payment/hdfc", hdfc);
 app.get(HDFC_RETURN_PATH, hdfcReturn);
 app.post(HDFC_RETURN_PATH, hdfcReturn);
 app.post(HDFC_WEBHOOK_PATH, hdfcWebhook);
+// ISGPay (UAT): create/status for the browser; return/callback are cookie-free gateway receivers.
+app.use("/api/payments/isgpay", isgpay);
 
 // ── Legacy SabPaisa relay endpoint ───────────────────────────────────────────
 // This endpoint previously accepted any unauthenticated POST and blind-forwarded
