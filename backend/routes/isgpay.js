@@ -120,7 +120,8 @@ router.post("/create", (req, res) => {
     isgpayLog("sale_submit", { orderId: order.id, txnRefNo: sale.attempt.txnRefNo, amount: sale.attempt.amount,
       currency: sale.attempt.currency, method: "POST", endpoint: pathOf(sale.form.action),
       outerFields: Object.keys(sale.form.fields), encFields: sale.encFieldNames,
-      encDataLength: sale.form.fields.EncData.length, version: cfg.version || "absent" });
+      encDataLength: sale.form.fields.EncData.length, version: cfg.version || "absent",
+      payload: cfg.salePayload, target: sale.form.target });
     res.json({ provider: ISGPAY_GATEWAY, type: "form", attemptId: sale.attempt.txnRefNo, ...sale.form });
   } finally {
     initiating.delete(order.id);

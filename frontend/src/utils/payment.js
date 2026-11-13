@@ -39,7 +39,7 @@ export const providerName = (id) =>
  * checkout rejects the request if any hashed field differs by a character.
  * Nothing is logged — the payload carries hashes, txn ids and buyer contact.
  */
-export function submitHostedPaymentForm({ action, method, fields }) {
+export function submitHostedPaymentForm({ action, method, fields, target }) {
   if (!action || typeof action !== "string")
     throw new Error("Missing checkout action");
   if (!fields || typeof fields !== "object")
@@ -48,6 +48,8 @@ export function submitHostedPaymentForm({ action, method, fields }) {
   const form = document.createElement("form");
   form.method = (method || "POST").toUpperCase() === "GET" ? "GET" : "POST";
   form.action = action;
+  // Only when the backend asks (ISGPay, as its kit's form); other gateways are unchanged.
+  if (target === "_top") form.target = "_top";
   form.style.display = "none";
 
   for (const [name, value] of Object.entries(fields)) {
@@ -94,6 +96,7 @@ export function handleCheckoutResult(result, deps = {}) {
       action: result.action,
       method: result.method,
       fields: result.fields,
+      ...(result.target ? { target: result.target } : {}),
     });
     return "form";
   }

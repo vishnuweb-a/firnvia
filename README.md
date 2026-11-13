@@ -69,6 +69,8 @@ another Vercel instance loses them, and the customer sees "Payment session unava
 The callback URL must be registered with ISGPay separately; setting the env var does not register it.
 `ISGPAY_VERSION` is optional and explicit: unset sends no `Version` (v1.6 tables list none); set
 (the legacy kit uses `1`) adds it to the sale and status requests. It is never retried automatically.
+Two explicit UAT diagnostics are documented in `backend/.env.example`: `ISGPAY_SALE_PAYLOAD=kit_minimal`
+(required sale fields only) and `ISGPAY_STATUS_TRANSPORT=kit_query` (the kit's status request placement).
 Sanitized `[isgpay sale_submit|return_received|callback_received|status_request|status_response]`
 log lines carry field names, lengths and check results only, never secrets or customer data.
 

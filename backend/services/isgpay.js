@@ -26,6 +26,9 @@
 //     format/decoding; push-callback acknowledgement encoding (JSON placeholder); whether Version
 //     is required. An empty status body is reported as inconclusive, never as success.
 //
+// UAT diagnostics (explicit env, default unchanged): ISGPAY_SALE_PAYLOAD=kit_minimal sends only the
+// v1.6 required sale fields; ISGPAY_STATUS_TRANSPORT=kit_query uses the kit's status placement.
+//
 // Version: explicit. ISGPAY_VERSION unset → no Version field anywhere (v1.6 tables list none).
 // Set (the kit uses "1") → sent in the sale EncData (hashed), the outer sale form, and the status
 // request. Never switched or retried automatically: a second sale could double-charge.
@@ -65,6 +68,9 @@ export function isgpayConfig() {
   cfg.payOpt = env("ISGPAY_PAY_OPT");
   cfg.acceptablePaymentModes = env("ISGPAY_ACCEPTABLE_PAYMENT_MODES");
   cfg.version = env("ISGPAY_VERSION"); // "" = omit; see header
+  // UAT diagnostics, explicit and never switched automatically (see .env.example).
+  cfg.salePayload = env("ISGPAY_SALE_PAYLOAD").toLowerCase() || "full";               // full | kit_minimal
+  cfg.statusTransport = env("ISGPAY_STATUS_TRANSPORT").toLowerCase() || "form_body";  // form_body | kit_query
   // ISGPAY_REFUND_URL / ISGPAY_REFUND_STATUS_URL: reserved for future refund work.
   return cfg;
 }
@@ -83,6 +89,9 @@ export function isgpayMissingConfig(cfg = isgpayConfig()) {
   if (cfg.terminalId && !/^[A-Za-z0-9]{1,8}$/.test(cfg.terminalId)) missing.push("ISGPAY_TERMINAL_ID");
   for (const k of HTTPS_URLS) if (cfg[k] && !isHttps(cfg[k])) missing.push(`${REQUIRED_ENV[k]} (https)`);
   if (cfg.version && !/^\d{1,2}$/.test(cfg.version)) missing.push("ISGPAY_VERSION (numeric)");
+  // A typo must not fall back silently to another mode.
+  if (!["full", "kit_minimal"].includes(cfg.salePayload)) missing.push("ISGPAY_SALE_PAYLOAD (full|kit_minimal)");
+  if (!["form_body", "kit_query"].includes(cfg.statusTransport)) missing.push("ISGPAY_STATUS_TRANSPORT (form_body|kit_query)");
   return missing;
 }
 
@@ -275,6 +284,7 @@ export function buildSaleRequest(order, cfg = isgpayConfig()) {
   const txnRefNo = newTxnRefNo();
   const buyer = order.buyer || {};
   const email = String(buyer.email || "").trim();
+  const minimal = cfg.salePayload === "kit_minimal";
 
   const fields = {
     BankId: cfg.bankId,
@@ -288,23 +298,31 @@ export function buildSaleRequest(order, cfg = isgpayConfig()) {
     Currency: cfg.currency,
     Amount: amount,
     ReturnURL: cfg.returnUrl,
+    Version: cfg.version,                                  // explicit opt-in; "" is omitted
+  };
+  // kit_minimal stops here: v1.6 required fields (+ Version if set). Buyer/order details stay on the local order.
+  if (!minimal) Object.assign(fields, {
     OrderInfo: clean(order.id, /[^A-Za-z0-9]/g, 40),       // links back to the Firvanra order
     FirstName: clean(buyer.firstName, /[^A-Za-z ]/g, 30),
-    Email: email.length <= 100 && /^[^\s|:]+@[^\s|:]+$/.test(email) ? email : "",
+    // Optional, v1.6 max 30: an over-limit address is omitted, never truncated (stored order untouched).
+    Email: email.length <= 30 && /^[^\s|:]+@[^\s|:]+$/.test(email) ? email : "",
     Phone: normalizePhone(buyer.phone) || "",
     payOpt: cfg.payOpt,                                    // e.g. "upi"
     AcceptablePaymentModes: cfg.acceptablePaymentModes,   // e.g. "upi"
-    Version: cfg.version,                                  // explicit opt-in; "" is omitted
-  };
+  });
   // No CardNumber / ExpiryDate / CardSecurityCode: hosted redirection only.
 
-  const outer = { MerchantId: cfg.merchantId, TerminalId: cfg.terminalId, BankId: cfg.bankId,
-    EncData: buildEncData(fields, cfg) };
+  const EncData = buildEncData(fields, cfg);
+  // kit_minimal uses the input order of the kit's views/pgredirect.ejs; full keeps the v1.6 table order.
+  const outer = minimal
+    ? { EncData, MerchantId: cfg.merchantId, BankId: cfg.bankId, TerminalId: cfg.terminalId }
+    : { MerchantId: cfg.merchantId, TerminalId: cfg.terminalId, BankId: cfg.bankId, EncData };
   if (cfg.version) outer.Version = cfg.version; // kit sends it outside EncData too
   return {
     attempt: { txnRefNo, amount, currency: cfg.currency, providerStatus: "NEW", verified: false,
       createdAt: new Date().toISOString() },
-    form: { action: cfg.saleUrl, method: "POST", fields: outer },
+    // target "_top" as pgredirect.ejs; the browser's default enctype is application/x-www-form-urlencoded.
+    form: { action: cfg.saleUrl, method: "POST", target: "_top", fields: outer },
     // Sanitized: names only, same order the hash uses (+ SecureHash).
     encFieldNames: [...Object.keys(fields).filter((k) => present(fields[k])).sort(), "SecureHash"],
   };
@@ -387,20 +405,30 @@ export async function querySaleStatus(txnRefNo, cfg = isgpayConfig()) {
     TxnRefNo: txnRefNo, PassCode: cfg.passCode, TxnType: "Status", MCC: cfg.mcc,
     Version: cfg.version, // "" omitted from hash and body
   };
-  // Form-encoded POST body (PDF: POST only; encoding UNCONFIRMED). Not the kit's
-  // query string, which put PassCode in a logged URL and truncated the hash with slice(0,-2).
-  const sent = Object.fromEntries(Object.entries(fields).filter(([, v]) => present(v)));
+  // PDF: POST only; parameter placement UNCONFIRMED. Explicit ISGPAY_STATUS_TRANSPORT, never cycled:
+  //   form_body (default) — form-urlencoded POST body.
+  //   kit_query — as the kit's Utility.sendRequest: sorted params in the URL query, empty body,
+  //     Content-Type application/json. Built with URLSearchParams, so the kit's slice(0,-2)
+  //     hash truncation is not reproduced. The URL then carries PassCode: it is never logged,
+  //     and axios errors are reduced to a reason label (failureReason) before anything is logged.
+  const kitQuery = cfg.statusTransport === "kit_query";
+  let entries = Object.entries(fields).filter(([, v]) => present(v));
+  if (kitQuery) entries = entries.sort(([a], [b]) => (a < b ? -1 : 1)); // kit sorts names; SecureHash last
+  const sent = Object.fromEntries(entries);
   sent.SecureHash = secureHash(sent, cfg.secureSecret);
-  const body = new URLSearchParams(sent).toString();
-  const contentType = "application/x-www-form-urlencoded";
-  isgpayLog("status_request", { txnRefNo, method: "POST", endpoint: pathOf(cfg.statusUrl), query: "none",
-    contentType, bodyFields: Object.keys(sent), bodyBytes: Buffer.byteLength(body), version: cfg.version || "absent" });
+  const params = new URLSearchParams(sent).toString();
+  const url = kitQuery ? `${cfg.statusUrl}?${params}` : cfg.statusUrl;
+  const body = kitQuery ? undefined : params; // undefined, not "": axios would JSON-encode "" into a 2-byte body
+  const contentType = kitQuery ? "application/json" : "application/x-www-form-urlencoded";
+  isgpayLog("status_request", { txnRefNo, method: "POST", endpoint: pathOf(cfg.statusUrl), transport: cfg.statusTransport,
+    query: kitQuery ? "fields" : "none", contentType, [kitQuery ? "queryFields" : "bodyFields"]: Object.keys(sent),
+    bodyBytes: Buffer.byteLength(body || ""), version: cfg.version || "absent" });
 
   let lastReason = "network";
   for (let i = 0; i < STATUS_TRIES; i++) {
     let res;
     try {
-      res = await axios.post(cfg.statusUrl, body, {
+      res = await axios.post(url, body, {
         headers: { "Content-Type": contentType },
         timeout: STATUS_TIMEOUT_MS, maxRedirects: 0, responseType: "text", transformResponse: (d) => d,
       });

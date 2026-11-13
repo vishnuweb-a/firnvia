@@ -37,11 +37,12 @@ const svc = await import("../services/isgpay.js");
 const statusCalls = [];
 const book = new Map(); // TxnRefNo -> record fields | function
 mock.method(axios, "post", async (url, body, opts) => {
-  if (url !== CFG.ISGPAY_STATUS_URL) throw new Error(`unexpected axios.post ${url}`);
+  const [endpoint, query = ""] = url.split("?");
+  if (endpoint !== CFG.ISGPAY_STATUS_URL) throw new Error("unexpected axios.post");
   statusCalls.push({ url, body, opts });
-  const ref = new URLSearchParams(body).get("TxnRefNo");
+  const ref = new URLSearchParams(body || query).get("TxnRefNo"); // form_body | kit_query
   const entry = book.get(ref);
-  if (typeof entry === "function") return entry();
+  if (typeof entry === "function") return entry(url);
   const rec = { BankId: CFG.ISGPAY_BANK_ID, MerchantId: CFG.ISGPAY_MERCHANT_ID, TerminalId: CFG.ISGPAY_TERMINAL_ID,
     TxnRefNo: ref, TxnType: "Status", ResponseCode: "RNF", Message: "Request Not Found", ...(entry || {}) };
   rec.SecureHash = svc.secureHash(rec, CFG.ISGPAY_SECURE_SECRET);
@@ -392,6 +393,66 @@ test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed), ou
   delete process.env.ISGPAY_VERSION;
 });
 
+// ── v1.6 field limits + kit parity ──────────────────────────────────────────
+test("Email: ≤30 chars sent; over-limit omitted from EncData and hash, never truncated; stored address kept", async () => {
+  const open = (body) => svc.parseEncData(svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY));
+  const send = async (email) => {
+    const order = localOrder();
+    order.buyer.email = email;
+    const res = await postJson("/api/payments/isgpay/create", { orderId: order.id });
+    assert.equal(res.status, 200);
+    return { order, f: open(await res.json()) };
+  };
+  const at30 = "a".repeat(25) + "@b.co"; // exactly 30
+  assert.equal((await send(at30)).f.Email, at30);
+
+  const at31 = "a".repeat(26) + "@b.co";
+  const { order, f } = await send(at31);
+  assert.ok(!("Email" in f), "over-limit Email is omitted");
+  assert.ok(svc.verifySecureHash(f, CFG.ISGPAY_SECURE_SECRET), "hash covers the payload without Email");
+  assert.equal(order.buyer.email, at31, "customer's stored address is unchanged");
+});
+
+test("Version=1 matches the kit: plaintext + ciphertext identical to Utility.js; outer form carries Version", async () => {
+  process.env.ISGPAY_VERSION = "1";
+  const { body } = await created();
+  delete process.env.ISGPAY_VERSION;
+  assert.deepEqual(Object.keys(body.fields).sort(), ["BankId", "EncData", "MerchantId", "TerminalId", "Version"]);
+  assert.equal(body.fields.Version, "1");
+
+  // Rebuild from the decrypted fields the way the kit's app.js + Utility.js do.
+  const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
+  const { SecureHash, ...f } = svc.parseEncData(plain);
+  const sorted = Object.keys(f).sort();
+  assert.ok(sorted.includes("Version"));
+  const kitHash = crypto.createHash("sha256").update(CFG.ISGPAY_SECURE_SECRET + sorted.map((k) => f[k]).join("")).digest("hex");
+  assert.equal(SecureHash, kitHash);
+  const kitPlain = [...sorted.map((k) => `${k}||${f[k]}`), `SecureHash||${kitHash}`].join("::");
+  assert.equal(plain, kitPlain);
+  const c = crypto.createCipheriv("aes-256-ecb", CFG.ISGPAY_ENC_KEY, "");
+  assert.equal(body.fields.EncData, c.update(kitPlain, "utf8", "base64") + c.final("base64"));
+});
+
+test("browser form POST: urlencoded round-trip keeps EncData Base64 ('+', '/', '=') byte-identical", async () => {
+  process.env.ISGPAY_VERSION = "1";
+  const { body } = await created();
+  delete process.env.ISGPAY_VERSION;
+  // URLSearchParams is the same application/x-www-form-urlencoded serializer a <form> submit uses.
+  const wire = new URLSearchParams(body.fields).toString();
+  assert.ok(!/[+ ]/.test(wire.match(/EncData=([^&]*)/)[1]), "'+' is percent-encoded on the wire, never a bare '+' or space");
+  const decoded = Object.fromEntries(new URLSearchParams(wire));
+  assert.deepEqual(decoded, body.fields);
+});
+
+test("optional UPI hints blank → payOpt and AcceptablePaymentModes absent from EncData; hash valid", async () => {
+  process.env.ISGPAY_PAY_OPT = "";
+  process.env.ISGPAY_ACCEPTABLE_PAYMENT_MODES = "";
+  const { body } = await created();
+  const f = svc.parseEncData(svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY));
+  assert.ok(!("payOpt" in f) && !("AcceptablePaymentModes" in f));
+  assert.ok(svc.verifySecureHash(f, CFG.ISGPAY_SECURE_SECRET));
+});
+
 // ── empty HTTP 200 + diagnostics ────────────────────────────────────────────
 function captureLogs() {
   const lines = [];
@@ -399,6 +460,113 @@ function captureLogs() {
     mock.method(console, m, (...a) => lines.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "))));
   return { lines, restore: () => spies.forEach((s) => s.mock.restore()) };
 }
+
+// ── UAT diagnostics: kit_minimal sale payload, status transport ─────────────
+test("ISGPAY_SALE_PAYLOAD=kit_minimal: exactly the required fields + Version, kit-identical hash/plaintext/ciphertext", async () => {
+  Object.assign(process.env, { ISGPAY_SALE_PAYLOAD: "kit_minimal", ISGPAY_VERSION: "1" }); // payOpt/modes stay "upi" in env
+  let c;
+  try { c = await created(199); }
+  finally { delete process.env.ISGPAY_SALE_PAYLOAD; delete process.env.ISGPAY_VERSION; }
+  const { body, order, ref } = c;
+
+  // Outer form: the kit's pgredirect.ejs — inputs in its order, POST, target _top.
+  assert.deepEqual(Object.keys(body.fields), ["EncData", "MerchantId", "BankId", "TerminalId", "Version"]);
+  assert.deepEqual([body.method, body.target, body.action, body.fields.Version], ["POST", "_top", CFG.ISGPAY_SALE_URL, "1"]);
+
+  const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
+  const { SecureHash, ...f } = svc.parseEncData(plain);
+  assert.deepEqual(f, { Amount: "19900", BankId: "000004", Command: "Pay", Currency: "356", MCC: "7372",
+    MerchantId: CFG.ISGPAY_MERCHANT_ID, PassCode: "FAKEPASS", ReturnURL: CFG.ISGPAY_RETURN_URL,
+    TerminalId: "CG000001", TxnRefNo: ref, TxnType: "Pay", Version: "1" });
+  assert.ok(/^[A-Za-z0-9]{1,40}$/.test(ref));
+
+  // The kit's app.js + Utility.js steps on the same inputs: sort, hash, serialize, encrypt.
+  const sorted = Object.keys(f).sort();
+  const kitHash = crypto.createHash("sha256").update(CFG.ISGPAY_SECURE_SECRET + sorted.map((k) => f[k]).join("")).digest("hex");
+  assert.equal(SecureHash, kitHash, "hash covers Version and nothing that was omitted");
+  const kitPlain = [...sorted.map((k) => `${k}||${f[k]}`), `SecureHash||${kitHash}`].join("::");
+  assert.equal(plain, kitPlain);
+  assert.ok(!/\s/.test(plain));
+  const k = crypto.createCipheriv("aes-256-ecb", CFG.ISGPAY_ENC_KEY, "");
+  assert.equal(body.fields.EncData, k.update(kitPlain, "utf8", "base64") + k.final("base64"));
+
+  // Browser form round-trip keeps the Base64 intact.
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(new URLSearchParams(body.fields).toString())), body.fields);
+  // Local order keeps what the payload left out.
+  assert.deepEqual([order.buyer.firstName, order.buyer.email, order.buyer.phone, order.total], ["Asha", "a@b.co", "+91 90000 00000", 199]);
+  assert.equal(order.isgpayAttempts.length, 1, "no automatic second sale");
+});
+
+test("default stays the full payload; an unknown diagnostic value blocks checkout instead of falling back", async () => {
+  assert.deepEqual([cfg().salePayload, cfg().statusTransport], ["full", "form_body"]);
+  assert.equal((await created()).body.target, "_top");
+  for (const k of ["ISGPAY_SALE_PAYLOAD", "ISGPAY_STATUS_TRANSPORT"]) {
+    process.env[k] = "auto";
+    try { assert.equal((await postJson("/api/payments/isgpay/create", { orderId: localOrder().id })).status, 503); }
+    finally { delete process.env[k]; }
+  }
+});
+
+test("ISGPAY_STATUS_TRANSPORT: form_body keeps params in the body; kit_query puts them in the URL with a full 64-char hash", async () => {
+  const run = async (transport) => {
+    if (transport) process.env.ISGPAY_STATUS_TRANSPORT = transport;
+    process.env.ISGPAY_VERSION = "1";
+    const cap = captureLogs();
+    try {
+      const { order, ref } = await created();
+      book.set(ref, { ResponseCode: "00", Amount: "19900" });
+      statusCalls.length = 0;
+      const r = await svc.reconcileAttempt(order, order.isgpayAttempts[0]);
+      assert.equal(statusCalls.length, 1, "one request, no cycling through transports");
+      return { call: statusCalls[0], ref, order, r, logs: cap.lines.join("\n") };
+    } finally { cap.restore(); delete process.env.ISGPAY_STATUS_TRANSPORT; delete process.env.ISGPAY_VERSION; }
+  };
+  const want = ["BankId", "MCC", "MerchantId", "PassCode", "TerminalId", "TxnRefNo", "TxnType", "Version", "SecureHash"];
+
+  const form = await run();
+  assert.equal(form.call.url, CFG.ISGPAY_STATUS_URL);
+  assert.equal(form.call.opts.headers["Content-Type"], "application/x-www-form-urlencoded");
+  const formSent = Object.fromEntries(new URLSearchParams(form.call.body));
+  assert.deepEqual(Object.keys(formSent).sort(), [...want].sort());
+
+  const kit = await run("kit_query");
+  const [endpoint, query] = kit.call.url.split("?");
+  assert.equal(endpoint, CFG.ISGPAY_STATUS_URL);
+  assert.equal(kit.call.body, undefined, "no body, like the kit");
+  assert.equal(kit.call.opts.headers["Content-Type"], "application/json");
+  const kitSent = Object.fromEntries(new URLSearchParams(query));
+  assert.deepEqual(Object.keys(kitSent), want, "kit order: sorted names, SecureHash last");
+  assert.ok(!query.endsWith("&"));
+  assert.equal(kit.order.status, "paid", "a hash-verified Status 00 still settles in kit_query");
+
+  for (const [sent, t] of [[formSent, form], [kitSent, kit]]) {
+    assert.match(sent.SecureHash, /^[0-9a-f]{64}$/, "hash is not truncated");
+    assert.ok(svc.verifySecureHash(sent, CFG.ISGPAY_SECURE_SECRET));
+    assert.deepEqual([sent.TxnRefNo, sent.TxnType, sent.PassCode], [t.ref, "Status", "FAKEPASS"]);
+    for (const secret of [CFG.ISGPAY_PASS_CODE, CFG.ISGPAY_SECURE_SECRET, CFG.ISGPAY_ENC_KEY, sent.SecureHash, "?"])
+      assert.ok(!t.logs.includes(secret), "no URL/query, credential or hash in logs");
+  }
+});
+
+test("kit_query: an HTTP-client error carrying the credential-bearing URL never reaches logs; order stays pending", async () => {
+  process.env.ISGPAY_STATUS_TRANSPORT = "kit_query";
+  const cap = captureLogs();
+  let order, url;
+  try {
+    const c = await created();
+    order = c.order;
+    book.set(c.ref, (u) => { url = u; throw Object.assign(new Error(`connect ECONNREFUSED ${u}`), { config: { url: u } }); });
+    const r = await svc.reconcileAttempt(order, order.isgpayAttempts[0]);
+    assert.deepEqual([r.outcome, r.reason], ["unavailable", "network"]);
+    book.set(c.ref, () => ({ status: 200, headers: {}, data: "" })); // HTTP 200 alone is not success
+    assert.equal((await svc.reconcileAttempt(order, order.isgpayAttempts[0])).reason, "empty_response");
+  } finally { cap.restore(); delete process.env.ISGPAY_STATUS_TRANSPORT; }
+  assert.equal(order.status, "pending");
+  const all = cap.lines.join("\n");
+  const q = new URL(url).searchParams;
+  for (const secret of [url, q.toString(), q.get("PassCode"), q.get("SecureHash")])
+    assert.ok(!all.includes(secret), "credential-bearing URL leaked");
+});
 
 test("empty HTTP 200 status → inconclusive (empty_response), not retried, not paid", async () => {
   const { order, ref } = await created();
