@@ -10,6 +10,7 @@ import {
   checkoutProviders,
   handleCheckoutResult,
   providerName,
+  submitHostedPaymentForm,
 } from "../utils/payment.js";
 
 const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
@@ -23,12 +24,18 @@ export default function Checkout() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [hdfcEnabled, setHdfcEnabled] = useState(false);
+  const [isgpayEnabled, setIsgpayEnabled] = useState(false);
+  // ISGPay form kept for a visible Continue button if auto-submit is blocked.
+  const [pendingForm, setPendingForm] = useState(null);
 
   // The backend decides; any error keeps the HDFC option hidden.
   useEffect(() => {
     let live = true;
     api.hdfcAvailability()
       .then((r) => { if (live) setHdfcEnabled(r?.enabled === true); })
+      .catch(() => {});
+    api.isgpayAvailability()
+      .then((r) => { if (live) setIsgpayEnabled(r?.enabled === true); })
       .catch(() => {});
     return () => { live = false; };
   }, []);
@@ -63,6 +70,7 @@ export default function Checkout() {
       // AirPay returns a form payload without a `type`; normalise it so the
       // generic handler can route all three providers the same way.
       handleCheckoutResult(result.type ? result : { ...result, type: "form" });
+      if (provider === "isgpay") setPendingForm(result);
 
       // Deliberately no clear() here. The customer is leaving for a hosted
       // gateway and may cancel, fail or close the tab; their cart must survive
@@ -107,7 +115,7 @@ export default function Checkout() {
                 ))}
                 <div className="summary-total" style={{ marginBottom: 22 }}><span>Total</span><span>{inr(total)}</span></div>
 
-                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled })} />
+                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled, isgpayEnabled })} />
 
                 <div className="consent">
                   <input id="agree" type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} aria-describedby="agree-help" />
@@ -123,6 +131,11 @@ export default function Checkout() {
                 <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={pay}>
                   {payLabel}
                 </button>
+                {pendingForm && (
+                  <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} onClick={() => submitHostedPaymentForm(pendingForm)}>
+                    Continue to {providerName("isgpay")}
+                  </button>
+                )}
                 <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 12, textAlign: "center" }}>
                   You'll be redirected to {providerName(provider)} to complete payment securely.
                 </p>

@@ -60,6 +60,34 @@ the payment flow, and provider callbacks get clean URLs on the main domain.
 | SabPaisa  | PG 3.0 REST + Transaction Enquiry     | `GET`/`POST /api/payment/sabpaisa/callback` | `POST /api/payment/sabpaisa/webhook` |
 | PayU      | Hosted Checkout (SHA-512 hash)        | `POST /api/payment/payu/callback`       | `POST /api/payment/payu/webhook`       |
 | HDFC SmartGateway (UPI only) | Payment Page, Basic Auth + Order Status API | `GET`/`POST /payments/hdfc/return` | `POST /api/webhooks/hdfc` (Basic auth) |
+| ISGPay (UAT only) | NG Redirection v1.6: AES-256-ECB EncData + SHA-256 SecureHash, Sale Status API | `POST /api/payments/isgpay/return` | `POST /api/payments/isgpay/callback` |
+
+ISGPay is a **UAT demo, not production-ready**. It is off unless `ISGPAY_ENABLED=true`
+(exact string). Only a hash-verified Sale Status response (`ResponseCode=00`, matching
+amount/ids) marks an order paid. Attempts live in process memory, so a restart, redeploy or
+another Vercel instance loses them, and the customer sees "Payment session unavailable".
+The callback URL must be registered with ISGPay separately; setting the env var does not register it.
+`ISGPAY_VERSION` is optional and explicit: unset sends no `Version` (v1.6 tables list none); set
+(the legacy kit uses `1`) adds it to the sale and status requests. It is never retried automatically.
+Sanitized `[isgpay sale_submit|return_received|callback_received|status_request|status_response]`
+log lines carry field names, lengths and check results only, never secrets or customer data.
+
+**ISGPay UAT test procedure (one manual sandbox payment)**
+
+- Return and callback URLs go through the frontend domain, which rewrites `/api/*` to the backend:
+  `https://firvanra.online/api/payments/isgpay/return` and `.../callback`.
+- Coming back from the hosted page is **not** success. A test passes only when the backend logs a
+  `status_response` with `signature: "raw"` or `"url_decoded"` and `ResponseCode` `00`, the order
+  moves to `paid` via `GET /api/orders/:id`, and the payment appears in the ISGPay UAT merchant
+  panel with the same TxnRefNo and amount.
+- An empty Status response (HTTP 200, no body) is inconclusive: the order **stays pending**. Never
+  mark it paid or failed by hand.
+- Return and callback have no guaranteed arrival order, and either may be missing or duplicated.
+  Each one only triggers a Status query, so judge the result from the Status API, not from which
+  event arrived first.
+- If the order page shows "Payment session unavailable" (the in-memory attempt is gone), **do not
+  start another payment**. First look up the original TxnRefNo (from the `sale_submit` log) in the
+  ISGPay UAT panel and settle what happened to it; a second attempt risks a double charge.
 
 Signature verification **fails closed** throughout: a callback that arrives
 without a verifiable hash is rejected, never treated as successful.
