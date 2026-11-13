@@ -222,6 +222,27 @@ test("return: signed '00' alone is not success — Status says pending → stays
   assert.equal(order.status, "pending");
 });
 
+test("URL/plaintext claims never mark paid: ?status=paid, outer ResponseCode=00, order GET query", async () => {
+  const { order, ref } = await created(); // Status mock answers RNF (pending)
+  const res = await postForm("/api/payments/isgpay/return?status=paid&ResponseCode=00",
+    envelope(ref, {}, { outer: { ResponseCode: "00", status: "paid" } }));
+  assert.equal(res.status, 303);
+  assert.equal(order.status, "pending");
+  assert.equal((await (await fetch(`${base}/api/orders/${order.id}?status=paid`)).json()).status, "pending");
+});
+
+test("callback and return in either order: settles once, from Status only", async () => {
+  const { order, ref } = await created();
+  assert.equal((await postForm("/api/payments/isgpay/callback", envelope(ref))).status, 200); // Status: RNF
+  assert.equal(order.status, "pending");
+  book.set(ref, { ResponseCode: "00", Amount: "19900" });
+  assert.equal((await postForm("/api/payments/isgpay/return", envelope(ref))).status, 303);
+  assert.equal(order.status, "paid");
+  const paidAt = order.paidAt;
+  assert.equal((await postForm("/api/payments/isgpay/callback", envelope(ref))).status, 200);
+  assert.equal(order.paidAt, paidAt);
+});
+
 test("return: invalid hash rejected before any state change or Status call", async () => {
   const { order, ref } = await created();
   const res = await postForm("/api/payments/isgpay/return", envelope(ref, {}, { secret: "WRONG" }));
