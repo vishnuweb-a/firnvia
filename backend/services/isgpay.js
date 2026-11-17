@@ -22,7 +22,7 @@
 //     callback reposted up to 3× / 30 min without a response code.
 //   LEGACY-KIT COMPATIBILITY (YesBankPG Node kit, not in the PDF): AES-256-ECB/PKCS#7 with the key's
 //     raw UTF-8 bytes; empty fields dropped from hash and EncData; sorted EncData order; hash also
-//     tried over once-URL-decoded values; "k=v&k=v" status response; optional Version field.
+//     tried over once-URL-decoded values; "k=v&k=v" status response; optional status Version field.
 //   UNCONFIRMED ASSUMPTIONS (neither source settles them): status REQUEST encoding (we send a
 //     form-urlencoded body; the kit sends a query string with an empty body); status RESPONSE wire
 //     format/decoding; push-callback acknowledgement encoding (JSON placeholder); whether Version
@@ -31,10 +31,10 @@
 // UAT diagnostics (explicit env, default unchanged): ISGPAY_SALE_PAYLOAD=kit_minimal sends only the
 // v1.6 required sale fields; ISGPAY_STATUS_TRANSPORT=kit_query uses the kit's status placement.
 //
-// Version: explicit. ISGPAY_VERSION unset → no Version field anywhere (v1.6 tables list none).
-// Set (the kit uses "1") → sent in the sale EncData (hashed) and the status request. It is never in
-// the OUTER sale form (provider clarification: outer form = MerchantId, TerminalId, BankId, EncData;
-// SecureHash lives only inside EncData). Never switched or retried automatically: a second sale could double-charge.
+// Version: never sent in a Sale request, inside or outside EncData (v1.6 Sale tables list none;
+// provider: send required parameters only). ISGPAY_VERSION applies to the Status request only
+// (unset → omitted). Outer sale form = exactly MerchantId, TerminalId, BankId, EncData; SecureHash
+// lives only inside EncData. Nothing is switched or retried automatically: a second sale could double-charge.
 //
 // Status authority: only a hash-verified Sale Status response moves an order.
 // The browser return and push callback are verified triggers for that query.
@@ -313,9 +313,8 @@ export function buildSaleRequest(order, cfg = isgpayConfig()) {
     Currency: cfg.currency,
     Amount: amount,
     ReturnURL: cfg.returnUrl,
-    Version: cfg.version,                                  // explicit opt-in; "" is omitted
   };
-  // kit_minimal stops here: v1.6 required fields (+ Version if set). Buyer/order details stay on the local order.
+  // kit_minimal stops here: v1.6 required Sale fields only (no Version). Buyer/order details stay on the local order.
   if (!minimal) Object.assign(fields, {
     OrderInfo: clean(order.id, /[^A-Za-z0-9]/g, 40),       // links back to the Firvanra order
     FirstName: clean(buyer.firstName, /[^A-Za-z ]/g, 30),
@@ -328,12 +327,9 @@ export function buildSaleRequest(order, cfg = isgpayConfig()) {
   // No CardNumber / ExpiryDate / CardSecurityCode: hosted redirection only.
 
   const EncData = buildEncData(fields, cfg);
-  // kit_minimal uses the input order of the kit's views/pgredirect.ejs; full keeps the v1.6 table order.
   // Provider clarification: the outer form is EXACTLY these four fields in every mode (no Version,
   // no outer SecureHash). Built explicitly, never from `fields`.
-  const outer = minimal
-    ? { EncData, MerchantId: cfg.merchantId, BankId: cfg.bankId, TerminalId: cfg.terminalId }
-    : { MerchantId: cfg.merchantId, TerminalId: cfg.terminalId, BankId: cfg.bankId, EncData };
+  const outer = { MerchantId: cfg.merchantId, TerminalId: cfg.terminalId, BankId: cfg.bankId, EncData };
   return {
     attempt: { txnRefNo, amount, currency: cfg.currency, providerStatus: "NEW", verified: false,
       createdAt: new Date().toISOString() },

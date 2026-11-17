@@ -72,8 +72,8 @@ ISGPay is off unless `ISGPAY_ENABLED=true`
 amount/ids) marks an order paid. Attempts live in process memory, so a restart, redeploy or
 another Vercel instance loses them, and the customer sees "Payment session unavailable".
 The callback URL must be registered with ISGPay separately; setting the env var does not register it.
-`ISGPAY_VERSION` is optional and explicit: unset sends no `Version` (v1.6 tables list none); set
-(the legacy kit uses `1`) adds it inside the sale `EncData` and to the status request (never the outer form). It is never retried automatically.
+Sale requests never carry `Version` (v1.6 Sale tables list none; ISGPay asked for required parameters only).
+`ISGPAY_VERSION` applies to the Status request only: unset sends no `Version`; set (the legacy kit uses `1`) adds it there. It is never retried automatically.
 Per ISGPay's clarification the outer sale form carries exactly `MerchantId`, `TerminalId`, `BankId`, `EncData`;
 `SecureHash` exists only inside the encrypted `EncData` plaintext.
 Two explicit UAT diagnostics are documented in `backend/.env.example`: `ISGPAY_SALE_PAYLOAD=kit_minimal`
