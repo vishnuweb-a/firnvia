@@ -371,7 +371,7 @@ test("callback/return work while ISGPAY_ENABLED=false (late results still settle
 });
 
 // ── Version (explicit, never automatic) ─────────────────────────────────────
-test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed) and Status, never the outer form", async () => {
+test("Version: never in a Sale request (even with ISGPAY_VERSION=1); Status sends it only when set", async () => {
   const a = await created();
   assert.ok(!("Version" in a.body.fields));
   book.set(a.ref, { ResponseCode: "STO02" });
@@ -380,9 +380,9 @@ test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed) and
 
   process.env.ISGPAY_VERSION = "1";
   const b = await created();
-  assert.deepEqual(Object.keys(b.body.fields).sort(), OUTER);
+  assert.deepEqual(Object.keys(b.body.fields), ["MerchantId", "TerminalId", "BankId", "EncData"]);
   const f = svc.parseEncData(svc.decryptAes(b.body.fields.EncData, CFG.ISGPAY_ENC_KEY));
-  assert.equal(f.Version, "1");
+  assert.ok(!("Version" in f), "no Version inside the sale EncData");
   assert.ok(svc.verifySecureHash(f, CFG.ISGPAY_SECURE_SECRET));
   book.set(b.ref, { ResponseCode: "STO02" });
   statusCalls.length = 0;
@@ -417,7 +417,7 @@ test("Email: ≤30 chars sent; over-limit omitted from EncData and hash, never t
   assert.equal(order.buyer.email, at31, "customer's stored address is unchanged");
 });
 
-test("Version=1 matches the kit: plaintext + ciphertext identical to Utility.js; outer form is exactly the four fields", async () => {
+test("ISGPAY_VERSION=1 set: sale plaintext + ciphertext still identical to Utility.js steps, no Version; outer form is exactly the four fields", async () => {
   process.env.ISGPAY_VERSION = "1";
   const { body } = await created();
   delete process.env.ISGPAY_VERSION;
@@ -427,7 +427,7 @@ test("Version=1 matches the kit: plaintext + ciphertext identical to Utility.js;
   const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
   const { SecureHash, ...f } = svc.parseEncData(plain);
   const sorted = Object.keys(f).sort();
-  assert.ok(sorted.includes("Version"));
+  assert.ok(!sorted.includes("Version"));
   const kitHash = crypto.createHash("sha256").update(CFG.ISGPAY_SECURE_SECRET + sorted.map((k) => f[k]).join("")).digest("hex");
   assert.equal(SecureHash, kitHash);
   const kitPlain = [...sorted.map((k) => `${k}||${f[k]}`), `SecureHash||${kitHash}`].join("::");
@@ -465,28 +465,34 @@ function captureLogs() {
 }
 
 // ── UAT diagnostics: kit_minimal sale payload, status transport ─────────────
-test("ISGPAY_SALE_PAYLOAD=kit_minimal: exactly the required fields + Version, kit-identical hash/plaintext/ciphertext", async () => {
+test("ISGPAY_SALE_PAYLOAD=kit_minimal + ISGPAY_VERSION=1: exactly the 12 required fields, no Version, kit-identical hash/plaintext/ciphertext", async () => {
   Object.assign(process.env, { ISGPAY_SALE_PAYLOAD: "kit_minimal", ISGPAY_VERSION: "1" }); // payOpt/modes stay "upi" in env
   let c;
   try { c = await created(199); }
   finally { delete process.env.ISGPAY_SALE_PAYLOAD; delete process.env.ISGPAY_VERSION; }
   const { body, order, ref } = c;
 
-  // Outer form: the kit's pgredirect.ejs — inputs in its order, POST, target _top.
-  assert.deepEqual(Object.keys(body.fields), ["EncData", "MerchantId", "BankId", "TerminalId"]);
+  // Outer form: exactly these four, built explicitly; POST, target _top.
+  assert.deepEqual(Object.keys(body.fields), ["MerchantId", "TerminalId", "BankId", "EncData"]);
+  assert.deepEqual([body.fields.MerchantId, body.fields.TerminalId, body.fields.BankId],
+    [CFG.ISGPAY_MERCHANT_ID, CFG.ISGPAY_TERMINAL_ID, CFG.ISGPAY_BANK_ID]);
   assert.deepEqual([body.method, body.target, body.action], ["POST", "_top", CFG.ISGPAY_SALE_URL]);
 
   const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
-  const { SecureHash, ...f } = svc.parseEncData(plain);
+  const all = svc.parseEncData(plain);
+  assert.deepEqual(Object.keys(all).sort(), ["Amount", "BankId", "Command", "Currency", "MCC", "MerchantId",
+    "PassCode", "ReturnURL", "SecureHash", "TerminalId", "TxnRefNo", "TxnType"], "exactly the 12-field set");
+  const { SecureHash, ...f } = all;
   assert.deepEqual(f, { Amount: "19900", BankId: "000004", Command: "Pay", Currency: "356", MCC: "7372",
     MerchantId: CFG.ISGPAY_MERCHANT_ID, PassCode: "FAKEPASS", ReturnURL: CFG.ISGPAY_RETURN_URL,
-    TerminalId: "CG000001", TxnRefNo: ref, TxnType: "Pay", Version: "1" });
+    TerminalId: "CG000001", TxnRefNo: ref, TxnType: "Pay" });
+  assert.ok(svc.verifySecureHash(all, CFG.ISGPAY_SECURE_SECRET), "inner SecureHash verifies over the sent fields");
   assert.ok(/^[A-Za-z0-9]{1,40}$/.test(ref));
 
   // The kit's app.js + Utility.js steps on the same inputs: sort, hash, serialize, encrypt.
   const sorted = Object.keys(f).sort();
   const kitHash = crypto.createHash("sha256").update(CFG.ISGPAY_SECURE_SECRET + sorted.map((k) => f[k]).join("")).digest("hex");
-  assert.equal(SecureHash, kitHash, "hash covers Version and nothing that was omitted");
+  assert.equal(SecureHash, kitHash, "hash covers exactly the sent fields, nothing omitted");
   const kitPlain = [...sorted.map((k) => `${k}||${f[k]}`), `SecureHash||${kitHash}`].join("::");
   assert.equal(plain, kitPlain);
   assert.ok(!/\s/.test(plain));
@@ -621,7 +627,7 @@ test("diagnostics cover sale/return/status and never leak secrets, PassCode, Enc
   assert.equal(sale.amount, "19900");
   assert.equal(sale.endpoint, "/ISGPay-Genius/request.action");
   assert.ok(sale.encFields.includes("PassCode") && sale.encFields.at(-1) === "SecureHash");
-  assert.equal(sale.version, "absent");
+  assert.ok(!("version" in sale), "sale log no longer reports a Version");
   const [ret] = ev("return_received");
   assert.deepEqual([ret.decrypt, ret.signature, ret.outerIdentity, ret.innerIdentity, ret.consistency, ret.result],
     ["ok", "raw", "match", "match", "ok", "accepted"]);
