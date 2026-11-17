@@ -28,6 +28,8 @@ const CFG = {
 };
 Object.assign(process.env, CFG, { VERCEL: "1", PUBLIC_BASE_URL: "https://firvanra.online" });
 
+// Provider clarification: the outer sale form is exactly these four fields (SecureHash only inside EncData).
+const OUTER = ["BankId", "EncData", "MerchantId", "TerminalId"];
 const axios = (await import("axios")).default;
 const app = (await import("../server.js")).default;
 const { orders } = await import("./orders.js");
@@ -187,6 +189,8 @@ test("create: form POST to SALE_URL with exactly MerchantId/TerminalId/BankId/En
   assert.equal(f.AcceptablePaymentModes, "upi");
   assert.equal(f.Phone, "9000000000");
   assert.equal(f.OrderInfo, order.id.replace(/[^A-Za-z0-9]/g, ""));
+  assert.deepEqual(Object.keys(body.fields).sort(), OUTER);
+  assert.ok(!("SecureHash" in body.fields) && "SecureHash" in f, "SecureHash only inside EncData");
   for (const k of ["Version", "CardNumber", "ExpiryDate", "CardSecurityCode"]) assert.ok(!(k in f), k);
   assert.ok(/^[A-Za-z0-9]{1,40}$/.test(ref));
   assert.equal(order.gateway, "isgpay");
@@ -367,7 +371,7 @@ test("callback/return work while ISGPAY_ENABLED=false (late results still settle
 });
 
 // ── Version (explicit, never automatic) ─────────────────────────────────────
-test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed), outer form and Status", async () => {
+test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed) and Status, never the outer form", async () => {
   const a = await created();
   assert.ok(!("Version" in a.body.fields));
   book.set(a.ref, { ResponseCode: "STO02" });
@@ -376,7 +380,7 @@ test("Version: absent unless ISGPAY_VERSION is set; then in EncData (hashed), ou
 
   process.env.ISGPAY_VERSION = "1";
   const b = await created();
-  assert.equal(b.body.fields.Version, "1");
+  assert.deepEqual(Object.keys(b.body.fields).sort(), OUTER);
   const f = svc.parseEncData(svc.decryptAes(b.body.fields.EncData, CFG.ISGPAY_ENC_KEY));
   assert.equal(f.Version, "1");
   assert.ok(svc.verifySecureHash(f, CFG.ISGPAY_SECURE_SECRET));
@@ -413,12 +417,11 @@ test("Email: ≤30 chars sent; over-limit omitted from EncData and hash, never t
   assert.equal(order.buyer.email, at31, "customer's stored address is unchanged");
 });
 
-test("Version=1 matches the kit: plaintext + ciphertext identical to Utility.js; outer form carries Version", async () => {
+test("Version=1 matches the kit: plaintext + ciphertext identical to Utility.js; outer form is exactly the four fields", async () => {
   process.env.ISGPAY_VERSION = "1";
   const { body } = await created();
   delete process.env.ISGPAY_VERSION;
-  assert.deepEqual(Object.keys(body.fields).sort(), ["BankId", "EncData", "MerchantId", "TerminalId", "Version"]);
-  assert.equal(body.fields.Version, "1");
+  assert.deepEqual(Object.keys(body.fields).sort(), OUTER);
 
   // Rebuild from the decrypted fields the way the kit's app.js + Utility.js do.
   const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
@@ -470,8 +473,8 @@ test("ISGPAY_SALE_PAYLOAD=kit_minimal: exactly the required fields + Version, ki
   const { body, order, ref } = c;
 
   // Outer form: the kit's pgredirect.ejs — inputs in its order, POST, target _top.
-  assert.deepEqual(Object.keys(body.fields), ["EncData", "MerchantId", "BankId", "TerminalId", "Version"]);
-  assert.deepEqual([body.method, body.target, body.action, body.fields.Version], ["POST", "_top", CFG.ISGPAY_SALE_URL, "1"]);
+  assert.deepEqual(Object.keys(body.fields), ["EncData", "MerchantId", "BankId", "TerminalId"]);
+  assert.deepEqual([body.method, body.target, body.action], ["POST", "_top", CFG.ISGPAY_SALE_URL]);
 
   const plain = svc.decryptAes(body.fields.EncData, CFG.ISGPAY_ENC_KEY);
   const { SecureHash, ...f } = svc.parseEncData(plain);

@@ -40,13 +40,14 @@ test("ISGPay form: target=_top like the kit's pgredirect.ejs; inputs carry value
     body: { appendChild() {} },
   };
   try {
-    const fields = { EncData: "ab+/cd==", MerchantId: "100000020000001", BankId: "000004", TerminalId: "CG000001", Version: "1" };
+    const fields = { EncData: "ab+/cd==", MerchantId: "100000020000001", BankId: "000004", TerminalId: "CG000001" };
     const base = { action: "https://sandbox.isgpay.com/ISGPay-Genius/request.action", method: "POST", fields };
     let form;
     handleCheckoutResult({ type: "form", ...base, target: "_top" }, { submitForm: (p) => { form = submitHostedPaymentForm(p); } });
     assert.deepEqual([form.method, form.target, form.action, submitted], ["POST", "_top", base.action, 1]);
     assert.equal(form.enctype, undefined, "browser default: application/x-www-form-urlencoded");
     assert.deepEqual(inputs.map((i) => [i.name, i.value]), Object.entries(fields));
+    assert.deepEqual(inputs.map((i) => i.name).sort(), ["BankId", "EncData", "MerchantId", "TerminalId"], "exactly the four outer fields");
     assert.equal(submitHostedPaymentForm(base).target, undefined, "no target unless the backend sends one");
   } finally { delete globalThis.document; }
 });
