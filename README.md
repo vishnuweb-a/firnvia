@@ -60,9 +60,14 @@ the payment flow, and provider callbacks get clean URLs on the main domain.
 | SabPaisa  | PG 3.0 REST + Transaction Enquiry     | `GET`/`POST /api/payment/sabpaisa/callback` | `POST /api/payment/sabpaisa/webhook` |
 | PayU      | Hosted Checkout (SHA-512 hash)        | `POST /api/payment/payu/callback`       | `POST /api/payment/payu/webhook`       |
 | HDFC SmartGateway (UPI only) | Payment Page, Basic Auth + Order Status API | `GET`/`POST /payments/hdfc/return` | `POST /api/webhooks/hdfc` (Basic auth) |
-| ISGPay (UAT only) | NG Redirection v1.6: AES-256-ECB EncData + SHA-256 SecureHash, Sale Status API | `POST /api/payments/isgpay/return` | `POST /api/payments/isgpay/callback` |
+| ISGPay (uat / production) | NG Redirection v1.6: AES-256-ECB EncData + SHA-256 SecureHash, Sale Status API | `POST /api/payments/isgpay/return` | `POST /api/payments/isgpay/callback` |
 
-ISGPay is a **UAT demo, not production-ready**. It is off unless `ISGPAY_ENABLED=true`
+`ISGPAY_ENV=uat|production` selects the environment (checkout label "ISGPay (UAT)" vs "ISGPay").
+`ISGPAY_SALE_URL` must be that environment's confirmed sale endpoint (UAT `https://sandbox.isgpay.com/ISGPay-Genius/request.action`,
+production `https://isgpay.com/ISGPay-Genius/request.action`); a mismatch disables ISGPay. Nothing switches environment or retries.
+**Outstanding with ISGPay:** the production Status and refund endpoints are not yet confirmed (only the production SALE endpoint is);
+the Status URL is checked for host only. Orders cannot complete in production until Status is confirmed and tested.
+ISGPay is off unless `ISGPAY_ENABLED=true`
 (exact string). Only a hash-verified Sale Status response (`ResponseCode=00`, matching
 amount/ids) marks an order paid. Attempts live in process memory, so a restart, redeploy or
 another Vercel instance loses them, and the customer sees "Payment session unavailable".

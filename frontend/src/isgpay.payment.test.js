@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAYMENT_PROVIDERS, DEFAULT_PAYMENT_PROVIDER, ISGPAY_PROVIDER,
+  PAYMENT_PROVIDERS, DEFAULT_PAYMENT_PROVIDER, ISGPAY_PROVIDER, isgpayProvider,
   checkoutProviders, handleCheckoutResult, isValidProvider, providerName, submitHostedPaymentForm,
 } from "./utils/payment.js";
 
@@ -49,4 +49,14 @@ test("ISGPay form: target=_top like the kit's pgredirect.ejs; inputs carry value
     assert.deepEqual(inputs.map((i) => [i.name, i.value]), Object.entries(fields));
     assert.equal(submitHostedPaymentForm(base).target, undefined, "no target unless the backend sends one");
   } finally { delete globalThis.document; }
+});
+
+test("checkout label is environment-specific: ISGPay in production, ISGPay (UAT) otherwise", () => {
+  assert.equal(isgpayProvider("production").name, "ISGPay");
+  assert.equal(providerName("isgpay", "production"), "ISGPay");
+  assert.equal(checkoutProviders({ isgpayEnabled: true, isgpayEnv: "production" }).at(-1).name, "ISGPay");
+  for (const env of ["uat", undefined]) {
+    assert.equal(providerName("isgpay", env), "ISGPay (UAT)");
+    assert.equal(checkoutProviders({ isgpayEnabled: true, isgpayEnv: env }).at(-1).name, "ISGPay (UAT)");
+  }
 });

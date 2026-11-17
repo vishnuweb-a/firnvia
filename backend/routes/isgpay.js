@@ -83,7 +83,11 @@ async function handleEnvelope(body, source) {
 const router = Router();
 
 // Boolean only — never which variable is missing.
-router.get("/availability", (_req, res) => res.json({ enabled: isgpayAvailable() }));
+router.get("/availability", (_req, res) => {
+  const cfg = isgpayConfig();
+  const enabled = isgpayAvailable(cfg);
+  res.json(enabled ? { enabled, env: cfg.env } : { enabled });
+});
 
 // Trust boundary: only orderId is read; the amount comes from the stored order.
 router.post("/create", (req, res) => {
