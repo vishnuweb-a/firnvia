@@ -32,8 +32,9 @@
 // v1.6 required sale fields; ISGPAY_STATUS_TRANSPORT=kit_query uses the kit's status placement.
 //
 // Version: explicit. ISGPAY_VERSION unset → no Version field anywhere (v1.6 tables list none).
-// Set (the kit uses "1") → sent in the sale EncData (hashed), the outer sale form, and the status
-// request. Never switched or retried automatically: a second sale could double-charge.
+// Set (the kit uses "1") → sent in the sale EncData (hashed) and the status request. It is never in
+// the OUTER sale form (provider clarification: outer form = MerchantId, TerminalId, BankId, EncData;
+// SecureHash lives only inside EncData). Never switched or retried automatically: a second sale could double-charge.
 //
 // Status authority: only a hash-verified Sale Status response moves an order.
 // The browser return and push callback are verified triggers for that query.
@@ -328,10 +329,11 @@ export function buildSaleRequest(order, cfg = isgpayConfig()) {
 
   const EncData = buildEncData(fields, cfg);
   // kit_minimal uses the input order of the kit's views/pgredirect.ejs; full keeps the v1.6 table order.
+  // Provider clarification: the outer form is EXACTLY these four fields in every mode (no Version,
+  // no outer SecureHash). Built explicitly, never from `fields`.
   const outer = minimal
     ? { EncData, MerchantId: cfg.merchantId, BankId: cfg.bankId, TerminalId: cfg.terminalId }
     : { MerchantId: cfg.merchantId, TerminalId: cfg.terminalId, BankId: cfg.bankId, EncData };
-  if (cfg.version) outer.Version = cfg.version; // kit sends it outside EncData too
   return {
     attempt: { txnRefNo, amount, currency: cfg.currency, providerStatus: "NEW", verified: false,
       createdAt: new Date().toISOString() },
