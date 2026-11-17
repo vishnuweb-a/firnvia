@@ -1,4 +1,6 @@
-// ISGPay NG — Redirection, non-PCI ("ISGPay (UAT)"). UAT DEMO, NOT PRODUCTION-READY.
+// ISGPay NG — Redirection, non-PCI ("ISGPay (UAT)" / "ISGPay" in production).
+// ISGPAY_ENV=uat|production; ISGPAY_SALE_URL must be that environment's sale endpoint (rejected otherwise).
+// OUTSTANDING: production Status/refund endpoints are unconfirmed; payment completion depends on Status.
 //
 // Contract: ISGPay_NG_Redirection_NonPCI_Compliant_API_Specifications_v1.6.pdf.
 // The YesBankPG Node kit is used only to settle details the PDF leaves open
@@ -75,13 +77,25 @@ export function isgpayConfig() {
   return cfg;
 }
 
+// Confirmed by ISGPay support. Production Status/refund endpoints are NOT yet confirmed.
+const SALE_ENDPOINTS = {
+  uat: "https://sandbox.isgpay.com/ISGPay-Genius/request.action",
+  production: "https://isgpay.com/ISGPay-Genius/request.action",
+};
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+const sameUrl = (a, b) => { try { const x = new URL(a), y = new URL(b); return x.origin.toLowerCase() === y.origin && x.pathname === y.pathname && !x.search && !x.hash; } catch { return false; } };
 const isHttps = (v) => { try { return new URL(v).protocol === "https:"; } catch { return false; } };
 
 /** Problems that make the credentials unusable. Variable NAMES only, never values. */
 export function isgpayMissingConfig(cfg = isgpayConfig()) {
   const missing = Object.entries(REQUIRED_ENV).filter(([k]) => !cfg[k]).map(([, n]) => n);
-  // Only UAT is supported by this integration.
-  if (cfg.env !== "uat") missing.push("ISGPAY_ENV (uat)");
+  if (!SALE_ENDPOINTS[cfg.env]) missing.push("ISGPAY_ENV (uat|production)");
+  else {
+    // Never switch environments silently: a URL for the other environment is a config error.
+    if (cfg.saleUrl && !sameUrl(cfg.saleUrl, SALE_ENDPOINTS[cfg.env])) missing.push(`ISGPAY_SALE_URL (must be the ${cfg.env} sale endpoint)`);
+    // Only the production SALE endpoint is confirmed; for Status we can only reject the wrong host.
+    if (cfg.statusUrl && hostOf(cfg.statusUrl) !== hostOf(SALE_ENDPOINTS[cfg.env])) missing.push(`ISGPAY_STATUS_URL (must be on the ${cfg.env} host)`);
+  }
   if (cfg.encKey && Buffer.byteLength(cfg.encKey, "utf8") !== 32) missing.push("ISGPAY_ENC_KEY (32 bytes)");
   if (cfg.currency && cfg.currency !== "356") missing.push("ISGPAY_CURRENCY (356)");
   if (cfg.bankId && !/^[A-Za-z0-9]{6}$/.test(cfg.bankId)) missing.push("ISGPAY_BANK_ID");

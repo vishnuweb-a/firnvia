@@ -93,7 +93,7 @@ test('ISGPAY_ENABLED="false" (or anything but "true") keeps it disabled', async 
     assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: false });
   }
   process.env.ISGPAY_ENABLED = "TRUE";
-  assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: true });
+  assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: true, env: "uat" });
 });
 
 test("create is refused server-side when disabled or misconfigured; no names/secrets leaked", async () => {
@@ -637,3 +637,38 @@ test("order-page poll reconciles a pending ISGPay order", async () => {
   const o = await (await fetch(`${base}/api/orders/${order.id}`)).json();
   assert.equal(o.status, "paid");
 });
+
+// ── production environment ──────────────────────────────────────────────────
+const PROD = { ISGPAY_ENV: "production", ISGPAY_SALE_URL: "https://isgpay.com/ISGPay-Genius/request.action",
+  ISGPAY_STATUS_URL: "https://isgpay.com/ISGPay-Genius/Status" };
+
+test("production config with the production sale endpoint is accepted and posts there", async () => {
+  Object.assign(process.env, CFG, PROD);
+  try {
+    assert.deepEqual(svc.isgpayMissingConfig(), []);
+    assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: true, env: "production" });
+    const res = await postJson("/api/payments/isgpay/create", { orderId: localOrder().id });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).action, PROD.ISGPAY_SALE_URL);
+  } finally { Object.assign(process.env, CFG); }
+});
+
+test("endpoint/environment mismatch is rejected, never switched or retried", async () => {
+  for (const over of [{ ISGPAY_ENV: "production" },                       // UAT URL under production
+    { ISGPAY_ENV: "uat", ISGPAY_SALE_URL: PROD.ISGPAY_SALE_URL },         // production URL under UAT
+    { ...PROD, ISGPAY_STATUS_URL: CFG.ISGPAY_STATUS_URL },                // sandbox Status host under production
+    { ...PROD, ISGPAY_SALE_URL: "https://isgpay.com/other/request.action" },
+    { ISGPAY_ENV: "staging" }]) {
+    Object.assign(process.env, CFG, over);
+    try {
+      assert.ok(svc.isgpayMissingConfig().length > 0, JSON.stringify(over));
+      assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: false });
+      const order = localOrder();
+      assert.equal((await postJson("/api/payments/isgpay/create", { orderId: order.id })).status, 503);
+      assert.equal(order.isgpayAttempts?.length || 0, 0);
+    } finally { Object.assign(process.env, CFG); }
+  }
+});
+
+test("availability reports env uat for sandbox", async () =>
+  assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: true, env: "uat" }));

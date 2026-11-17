@@ -15,11 +15,12 @@ export const HDFC_UPI_PROVIDER = { id: "hdfc", name: "UPI — HDFC", blurb: "Pay
 
 // Offered only when the backend reports it available (ISGPAY_ENABLED + config).
 export const ISGPAY_PROVIDER = { id: "isgpay", name: "ISGPay (UAT)", blurb: "UPI via ISGPay hosted page" };
+export const isgpayProvider = (env) => (env === "production" ? { ...ISGPAY_PROVIDER, name: "ISGPay" } : ISGPAY_PROVIDER);
 
 /** Providers to show at checkout. */
-export const checkoutProviders = ({ hdfcEnabled = false, isgpayEnabled = false } = {}) => {
+export const checkoutProviders = ({ hdfcEnabled = false, isgpayEnabled = false, isgpayEnv } = {}) => {
   if (!hdfcEnabled && !isgpayEnabled) return PAYMENT_PROVIDERS;
-  return [...PAYMENT_PROVIDERS, ...(hdfcEnabled ? [HDFC_UPI_PROVIDER] : []), ...(isgpayEnabled ? [ISGPAY_PROVIDER] : [])];
+  return [...PAYMENT_PROVIDERS, ...(hdfcEnabled ? [HDFC_UPI_PROVIDER] : []), ...(isgpayEnabled ? [isgpayProvider(isgpayEnv)] : [])];
 };
 
 export const DEFAULT_PAYMENT_PROVIDER = "airpay";
@@ -29,8 +30,8 @@ const ALL_PROVIDERS = [...PAYMENT_PROVIDERS, HDFC_UPI_PROVIDER, ISGPAY_PROVIDER]
 export const isValidProvider = (id) =>
   ALL_PROVIDERS.some((p) => p.id === id);
 
-export const providerName = (id) =>
-  ALL_PROVIDERS.find((p) => p.id === id)?.name || "";
+export const providerName = (id, isgpayEnv) =>
+  (id === "isgpay" ? isgpayProvider(isgpayEnv) : ALL_PROVIDERS.find((p) => p.id === id))?.name || "";
 
 /**
  * Build a hidden form from a signed gateway payload and submit it.

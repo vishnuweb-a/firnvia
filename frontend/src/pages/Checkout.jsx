@@ -25,6 +25,7 @@ export default function Checkout() {
   const [error, setError] = useState(null);
   const [hdfcEnabled, setHdfcEnabled] = useState(false);
   const [isgpayEnabled, setIsgpayEnabled] = useState(false);
+  const [isgpayEnv, setIsgpayEnv] = useState();
   // ISGPay form kept for a visible Continue button if auto-submit is blocked.
   const [pendingForm, setPendingForm] = useState(null);
 
@@ -35,7 +36,7 @@ export default function Checkout() {
       .then((r) => { if (live) setHdfcEnabled(r?.enabled === true); })
       .catch(() => {});
     api.isgpayAvailability()
-      .then((r) => { if (live) setIsgpayEnabled(r?.enabled === true); })
+      .then((r) => { if (live) { setIsgpayEnabled(r?.enabled === true); setIsgpayEnv(r?.env); } })
       .catch(() => {});
     return () => { live = false; };
   }, []);
@@ -84,8 +85,8 @@ export default function Checkout() {
   };
 
   const payLabel = busy
-    ? `Opening ${providerName(provider)}…`
-    : `Pay ${inr(total)} with ${providerName(provider)}`;
+    ? `Opening ${providerName(provider, isgpayEnv)}…`
+    : `Pay ${inr(total)} with ${providerName(provider, isgpayEnv)}`;
 
   return (
     <App>
@@ -115,7 +116,7 @@ export default function Checkout() {
                 ))}
                 <div className="summary-total" style={{ marginBottom: 22 }}><span>Total</span><span>{inr(total)}</span></div>
 
-                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled, isgpayEnabled })} />
+                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled, isgpayEnabled, isgpayEnv })} />
 
                 <div className="consent">
                   <input id="agree" type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} aria-describedby="agree-help" />
@@ -133,11 +134,11 @@ export default function Checkout() {
                 </button>
                 {pendingForm && (
                   <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} onClick={() => submitHostedPaymentForm(pendingForm)}>
-                    Continue to {providerName("isgpay")}
+                    Continue to {providerName("isgpay", isgpayEnv)}
                   </button>
                 )}
                 <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 12, textAlign: "center" }}>
-                  You'll be redirected to {providerName(provider)} to complete payment securely.
+                  You'll be redirected to {providerName(provider, isgpayEnv)} to complete payment securely.
                 </p>
               </div>
             </div>
