@@ -108,6 +108,10 @@ export default function OrderStatus() {
               </p>
             )}
             {!unavailable && <p className="lead" style={{ margin: "0 auto" }}>Order ID: <b className="order-id">{id}</b></p>}
+            {/* Set by the backend only after HDFC's Order Status API verified the charge. */}
+            {!unavailable && status === "paid" && order?.hdfcPaidOrderId && (
+              <p className="lead" style={{ margin: "0 auto" }}>HDFC payment reference: <b className="order-id">{order.hdfcPaidOrderId}</b></p>
+            )}
             {view.note && (
               <p className="lead" style={{ margin: "14px auto 0" }}>{view.note}</p>
             )}
