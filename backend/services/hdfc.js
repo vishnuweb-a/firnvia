@@ -20,6 +20,7 @@
 
 import crypto from "crypto";
 import axios from "axios";
+import { hdfcDbEnabled, persistHdfcStatus } from "./hdfcStore.js";
 
 export const HDFC_GATEWAY = "hdfc";
 
@@ -155,9 +156,18 @@ export function sessionFailureDiagnostics(err, cfg) {
   };
 }
 
-/** Order ids: alphanumeric, < 21 chars, non-sequential (session API docs). */
-export function newHdfcOrderId() {
-  return "FIR" + crypto.randomBytes(12).toString("base64").replace(/[^A-Za-z0-9]/g, "").slice(0, 15).padEnd(15, "0");
+/**
+ * HDFC order ids: alphanumeric, < 21 chars, non-sequential, unique per order
+ * (session API docs). The internal id ("FIR-xxxxxxxxxx") can't be sent as-is:
+ * it contains "-" (nanoid may add "_"), and every retry needs a fresh HDFC id.
+ * So: "FIR" + the internal id's alphanumerics (portal visibly matches the site
+ * order) + ≥5 random chars per attempt. Readability only — the server-side
+ * attempt record is the link; never parse an internal id back out of this.
+ */
+export function newHdfcOrderId(internalId = "") {
+  const base = String(internalId).replace(/^FIR-/, "").replace(/[^A-Za-z0-9]/g, "").slice(0, 12);
+  const rand = crypto.randomBytes(12).toString("base64").replace(/[^A-Za-z0-9]/g, "").padEnd(16, "0");
+  return ("FIR" + base + rand).slice(0, 20);
 }
 
 // Stable, non-PII customer reference (needed by x-customerid / customer_id).
@@ -187,23 +197,31 @@ export function normalizeHdfcAmount(v) {
 }
 
 /**
- * Create the HDFC order + payment page link. The amount comes from the stored
- * order only; the caller passes nothing that could influence it.
- * @returns {Promise<{hdfcOrderId, amount, customerId, checkoutUrl, providerOrderRef}>}
+ * Validate the order and fix this attempt's ids/amount, without any I/O, so the
+ * attempt can be recorded durably before HDFC is called. Throws HdfcInputError.
  */
-export async function createSession(order, cfg = hdfcConfig()) {
+export function prepareSession(order, cfg = hdfcConfig()) {
   const amount = formatHdfcAmount(order.total);
   if (!amount) throw new HdfcInputError("Order total is invalid.");
-  const buyer = order.buyer || {};
-  const email = String(buyer.email || "").trim();
+  const email = String(order.buyer?.email || "").trim();
   if (!email) throw new HdfcInputError("Buyer email missing.");
-  const phone = normalizePhone(buyer.phone);
+  const phone = normalizePhone(order.buyer?.phone);
   if (!phone) throw new HdfcInputError("A valid 10-digit mobile number is required.");
-
-  const [first, ...rest] = nameSafe(buyer.firstName).split(/\s+/);
-  const hdfcOrderId = newHdfcOrderId();
-  const customerId = hdfcCustomerId(email);
   const paymentFilter = hdfcPaymentFilter(cfg);
+  return { hdfcOrderId: newHdfcOrderId(order.id), amount, email, phone, customerId: hdfcCustomerId(email),
+    paymentFilter, allowedMethods: paymentFilter.options.map((o) => o.paymentMethodType) };
+}
+
+/**
+ * Create the HDFC order + payment page link. The amount comes from the stored
+ * order only; the caller passes nothing that could influence it.
+ * Errors carry `.reason` (timeout | network | http_NNN | invalid_response).
+ * @returns {Promise<{hdfcOrderId, amount, customerId, checkoutUrl, providerOrderRef}>}
+ */
+export async function createSession(order, cfg = hdfcConfig(), prep = prepareSession(order, cfg)) {
+  const { amount, email, phone, hdfcOrderId, customerId, paymentFilter } = prep;
+  const buyer = order.buyer || {};
+  const [first, ...rest] = nameSafe(buyer.firstName).split(/\s+/);
   if (cfg.sandboxCardTest && paymentFilter === UPI_ONLY_PAYMENT_FILTER)
     console.warn("[hdfc session] SANDBOX_CARD_TEST ignored outside sandbox; UPI-only");
   const body = {
@@ -216,7 +234,7 @@ export async function createSession(order, cfg = hdfcConfig()) {
     payment_page_client_id: cfg.paymentPageClientId,
     action: "paymentPage",
     return_url: cfg.returnUrl,
-    description: "Firvanra order payment",
+    description: `Firvanra order ${order.id}`, // exact internal id, visible on HDFC's side
     first_name: first || "Customer",
     last_name: nameSafe(buyer.lastName) || rest.join(" ") || "NA",
     payment_filter: paymentFilter,
@@ -230,20 +248,22 @@ export async function createSession(order, cfg = hdfcConfig()) {
     });
   } catch (err) {
     console.warn("[hdfc session] failed:", JSON.stringify(sessionFailureDiagnostics(err, cfg)));
-    throw new Error(`HDFC session failed: ${failureReason(err)}`);
+    throw sessionError(failureReason(err), failureReason(err));
   }
 
   const data = res.data || {};
   const link = data.payment_links?.web;
-  if (String(data.order_id || "") !== hdfcOrderId) throw new Error("HDFC session failed: order_id mismatch");
+  if (String(data.order_id || "") !== hdfcOrderId) throw sessionError("order_id mismatch", "invalid_response");
   // Only ever send the customer to HDFC's own host.
   let linkOk = false;
   try { const u = new URL(link); linkOk = u.protocol === "https:" && u.host === new URL(cfg.baseUrl).host; } catch { /* invalid */ }
-  if (!linkOk) throw new Error("HDFC session failed: unexpected payment link");
+  if (!linkOk) throw sessionError("unexpected payment link", "invalid_response");
 
   return { hdfcOrderId, amount, customerId, checkoutUrl: link, providerOrderRef: data.id ? String(data.id) : null,
-    allowedMethods: paymentFilter.options.map((o) => o.paymentMethodType) };
+    allowedMethods: prep.allowedMethods };
 }
+
+const sessionError = (msg, reason) => Object.assign(new Error(`HDFC session failed: ${msg}`), { reason });
 
 export class HdfcInputError extends Error {}
 
@@ -393,20 +413,53 @@ export function applyHdfcStatus(order, attempt, record, cfg = hdfcConfig()) {
 }
 
 /**
- * Query HDFC for one attempt and apply the result.
+ * Query HDFC for one attempt and apply the result. With HDFC_DB_ENABLED the
+ * verified state is persisted before success is reported; if that write fails
+ * (or lost a race) the outcome is "unavailable" and callers retry/defer.
+ * @param {"return_url"|"webhook"|"order_status_api"|"reconciliation"} source  history event_source
  * @returns {Promise<{outcome:string, reason?:string, status:string}>}
  *   outcome adds "unavailable" | "not_found" | "not_configured".
  */
-export async function reconcileHdfcAttempt(order, attempt, cfg = hdfcConfig()) {
+export async function reconcileHdfcAttempt(order, attempt, cfg = hdfcConfig(), source = "order_status_api") {
   if (hdfcMissingConfig(cfg).length) return { outcome: "not_configured", status: order.status };
   attempt.lastCheckedAt = Date.now();
   const res = await getOrderStatus(attempt.hdfcOrderId, attempt.customerId, cfg);
   if (!res.ok) return { outcome: "unavailable", reason: res.reason, status: order.status };
   if (!res.found) return { outcome: "not_found", status: order.status };
+  const before = attempt.providerStatus;
   const applied = applyHdfcStatus(order, attempt, res.record, cfg);
-  if (applied.outcome === "mismatch")
+  if (applied.outcome === "mismatch") {
+    attempt.mismatchReason = applied.reason;
     console.warn("[hdfc reconcile] mismatch:", applied.reason, "for", order.id);
+  }
+  if (hdfcDbEnabled()) {
+    try {
+      const w = await persistHdfcStatus(order, attempt, res.record, before, source);
+      if (!w?.applied) return { outcome: "unavailable", reason: "stale", status: order.status };
+    } catch (err) {
+      console.error("[hdfc reconcile] not persisted for", order.id, err.code || err.message);
+      return { outcome: "unavailable", reason: "store", status: order.status };
+    }
+  }
   return applied;
+}
+
+/**
+ * May a new attempt follow `attempt`, given the outcome of a reconcile done
+ * just now? Only if it can never be charged:
+ *  - HDFC reports a terminal failure (AUTHENTICATION_FAILED, AUTHORIZATION_FAILED,
+ *    JUSPAY_DECLINED, AUTO_REFUNDED), or
+ *  - our POST /session failed (session_error recorded), so no payment link was
+ *    ever issued, and HDFC has no order or only an untouched NEW one.
+ * Everything else blocks: NEW/STARTED/PENDING*, AUTHORIZING, unknown statuses,
+ * mismatches, flagged attempts, and a 404 for a link that may have been issued
+ * (crash between write-ahead and session, or session still in flight elsewhere).
+ */
+export function hdfcRetryAllowed(attempt, outcome) {
+  if (attempt.verified || attempt.conflictReason || attempt.mismatchReason) return false;
+  if (outcome === "failed") return true;
+  if (!attempt.sessionError) return false;
+  return outcome === "not_found" || (outcome === "pending" && String(attempt.providerStatus).toUpperCase() === "NEW");
 }
 
 const REFRESH_MIN_INTERVAL_MS = 10000;
@@ -419,6 +472,6 @@ export async function refreshHdfcOrder(order, cfg = hdfcConfig()) {
   if (order?.gateway !== HDFC_GATEWAY || order.status !== "pending") return;
   const attempt = order.hdfcAttempts?.[order.hdfcAttempts.length - 1];
   if (!attempt || Date.now() - (attempt.lastCheckedAt || 0) < REFRESH_MIN_INTERVAL_MS) return;
-  try { await reconcileHdfcAttempt(order, attempt, cfg); }
+  try { await reconcileHdfcAttempt(order, attempt, cfg, "order_status_api"); }
   catch (err) { console.warn("[hdfc refresh] failed for", order.id, err.message); }
 }

@@ -27,8 +27,8 @@ Object.assign(process.env, CFG, { VERCEL: "1", FRONTEND_URL: "https://firvanra.o
 const axios = (await import("axios")).default;
 const app = (await import("../server.js")).default;
 const { orders } = await import("./orders.js");
-const { verifyReturnSignature, UPI_ONLY_PAYMENT_FILTER, SANDBOX_CARD_TEST_PAYMENT_FILTER, classifyHdfcStatus } =
-  await import("../services/hdfc.js");
+const { verifyReturnSignature, UPI_ONLY_PAYMENT_FILTER, SANDBOX_CARD_TEST_PAYMENT_FILTER, classifyHdfcStatus,
+  newHdfcOrderId, reconcileHdfcAttempt } = await import("../services/hdfc.js");
 
 // ── HDFC mock ───────────────────────────────────────────────────────────────
 const calls = [];
@@ -428,6 +428,20 @@ test("retry: new attempt after failure; blocked while previous is in flight; pai
   assert.equal((await initiate(order.id)).status, 409);
 });
 
+test("retry (in-memory mode): issued NEW link, unknown or unavailable status never permits a retry", async () => {
+  const { order, hdfcId } = await started();
+  order.hdfcAttempts[0].createdAt = new Date(Date.now() - 3600e3).toISOString(); // time is irrelevant
+  assert.equal((await initiate(order.id)).status, 409); // still NEW at HDFC
+  book.set(hdfcId, { ...charged(hdfcId), status: "AUTHORIZED" });
+  assert.equal((await initiate(order.id)).status, 409);
+  book.delete(hdfcId); // HDFC 404 for a link we handed out: inconclusive
+  assert.equal((await initiate(order.id)).status, 409);
+  book.set(hdfcId, () => { const e = new Error("t"); e.code = "ECONNABORTED"; throw e; });
+  assert.equal((await initiate(order.id)).status, 503);
+  assert.equal(calls.filter((c) => c.url.endsWith("/session")).length, 1);
+  assert.equal(order.hdfcAttempts.length, 1);
+});
+
 test("retry: previous attempt found CHARGED on retry settles instead of charging twice", async () => {
   const { order, hdfcId } = await started();
   book.set(hdfcId, charged(hdfcId));
@@ -450,6 +464,106 @@ test("second CHARGED attempt on a paid order is flagged, not re-fulfilled", asyn
   assert.equal(order.paidAt, paidAt);
   assert.equal(order.hdfcPaidOrderId, second);
   assert.equal(order.hdfcAttempts[0].duplicateCharge, true);
+});
+
+// ── order identity: internal id <-> HDFC id ─────────────────────────────────
+test("identity: one internal order, HDFC id carries it, description names it exactly", async () => {
+  const before = orders.size;
+  const { order, hdfcId } = await started();
+  const s = calls.find((c) => c.url.endsWith("/session"));
+  assert.equal(orders.size, before + 1, "initiate creates no second internal order");
+  assert.equal(s.body.order_id, hdfcId);
+  assert.equal(order.hdfcOrderId, hdfcId);
+  assert.match(hdfcId, /^[A-Za-z0-9]{1,20}$/);
+  assert.ok(hdfcId.startsWith("FIR" + order.id.slice(4).replace(/[^A-Za-z0-9]/g, "")));
+  assert.equal(s.body.description, `Firvanra order ${order.id}`);
+});
+
+test("identity: newHdfcOrderId strips '-'/'_', stays < 21 chars, unique per attempt", () => {
+  for (const id of ["FIR-PdVBR9W6KV", "FIR-a_b-c_d-e_", "", undefined, "FIR-" + "x".repeat(40)]) {
+    const a = newHdfcOrderId(id), b = newHdfcOrderId(id);
+    assert.match(a, /^FIR[A-Za-z0-9]{5,17}$/);
+    assert.notEqual(a, b);
+  }
+  assert.ok(newHdfcOrderId("FIR-PdVBR9W6KV").startsWith("FIRPdVBR9W6KV"));
+});
+
+test("identity: retry gets a new HDFC id for the SAME internal order", async () => {
+  const { order, hdfcId } = await started();
+  book.set(hdfcId, { ...charged(hdfcId), status: "AUTHORIZATION_FAILED" });
+  assert.equal((await initiate(order.id)).status, 200);
+  const second = order.hdfcAttempts[1].hdfcOrderId;
+  assert.notEqual(second, hdfcId);
+  assert.equal(second.slice(0, 13), hdfcId.slice(0, 13)); // same internal prefix
+});
+
+test("identity: verified paid order exposes the HDFC reference; repeated reads stay identical", async () => {
+  const { order, hdfcId } = await started();
+  book.set(hdfcId, charged(hdfcId));
+  await postReturn(returnForm(hdfcId));
+  const a = await getOrder(order.id), b = await getOrder(order.id);
+  assert.equal(a.status, "paid");
+  assert.equal(a.hdfcPaidOrderId, hdfcId);
+  assert.equal(a.hdfcTxnId, `TXN-${hdfcId}`);
+  assert.deepEqual(a, b);
+});
+
+test("Order Status from another merchant never pays", async () => {
+  const { order, hdfcId } = await started();
+  book.set(hdfcId, charged(hdfcId, { merchant_id: "OTHERMID" }));
+  await postReturn(returnForm(hdfcId));
+  assert.equal(order.status, "pending");
+  assert.equal(order.hdfcPaidOrderId, undefined);
+});
+
+test("signed return for an order this instance doesn't hold: 404 with reference, nothing linked", async () => {
+  const before = orders.size;
+  const res = await postReturn(returnForm("FIReis7VNCEAezdQaC"));
+  assert.equal(res.status, 404);
+  assert.match(await res.text(), /FIReis7VNCEAezdQaC/);
+  assert.equal(calls.filter((c) => c.method === "GET").length, 0, "no HDFC query, no guessing");
+  assert.equal(orders.size, before);
+  // A non-alphanumeric id is never echoed into the page.
+  const evil = await postReturn(returnForm("<script>x</script>"));
+  assert.equal(evil.status, 404);
+  assert.ok(!(await evil.text()).includes("<script>x"));
+});
+
+test("pre-change random-format HDFC ids still verify through the attempt record", async () => {
+  const order = localOrder();
+  const attempt = { hdfcOrderId: "FIReis7VNCEAezdQaC", customerId: "c1", amount: "849.00", currency: "INR", providerStatus: "NEW" };
+  order.gateway = "hdfc"; order.hdfcAttempts = [attempt];
+  book.set(attempt.hdfcOrderId, charged(attempt.hdfcOrderId));
+  const r = await reconcileHdfcAttempt(order, attempt);
+  assert.equal(r.outcome, "paid");
+  assert.equal(order.hdfcPaidOrderId, "FIReis7VNCEAezdQaC");
+});
+
+test("collision guard: an HDFC id already mapped is refused; existing mapping untouched", async () => {
+  // "FIR-colX…" and "FIR-col-X…" share an id prefix; fixed random bytes force the same HDFC id.
+  const n = ++seq;
+  const mk = (id) => { const o = localOrder(); orders.delete(o.id); o.id = id; orders.set(id, o); return o; };
+  const a = mk(`FIR-colX${n}`), b = mk(`FIR-col-X${n}`);
+  const rb = mock.method(crypto, "randomBytes", () => Buffer.alloc(12, 7));
+  try {
+    assert.equal((await initiate(a.id)).status, 200);
+    const hdfcId = a.hdfcAttempts[0].hdfcOrderId;
+    const res = await initiate(b.id);
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).checkoutUrl, undefined, "no payment link handed out");
+    assert.equal(b.hdfcAttempts, undefined);
+    assert.equal(b.hdfcOrderId, undefined);
+    assert.equal(b.gateway, undefined);
+    assert.equal(calls.filter((c) => c.url.endsWith("/session")).at(-1).body.order_id, hdfcId, "same id was generated");
+    // Original mapping intact: the signed return for that id still resolves to order A.
+    assert.deepEqual(a.hdfcAttempts.map((x) => x.hdfcOrderId), [hdfcId]);
+    book.set(hdfcId, charged(hdfcId));
+    const ret = await postReturn(returnForm(hdfcId));
+    assert.equal(ret.status, 303);
+    assert.match(ret.headers.get("location"), new RegExp(`/order/${a.id}\\?`));
+    assert.equal(a.status, "paid");
+    assert.equal(b.status, "pending");
+  } finally { rb.mock.restore(); }
 });
 
 // ── existing gateways untouched ─────────────────────────────────────────────
