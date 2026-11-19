@@ -681,3 +681,24 @@ test("endpoint/environment mismatch is rejected, never switched or retried", asy
 
 test("availability reports env uat for sandbox", async () =>
   assert.deepEqual(await (await fetch(`${base}/api/payments/isgpay/availability`)).json(), { enabled: true, env: "uat" }));
+
+test("dedicated checkout creates a hosted form only in production", async () => {
+  const path = "/api/payments/isgpay/create-production";
+  const order = localOrder();
+  assert.equal((await postJson(path, { orderId: order.id })).status, 503);
+  assert.equal((await postJson(path + "/", { orderId: order.id })).status, 503);
+  assert.equal(order.isgpayAttempts?.length || 0, 0);
+
+  Object.assign(process.env, CFG, PROD);
+  try {
+    const response = await postJson(path, { orderId: order.id });
+    assert.equal(response.status, 200);
+    const form = await response.json();
+    assert.equal(form.action, PROD.ISGPAY_SALE_URL);
+    assert.equal(form.method, "POST");
+    assert.deepEqual(Object.keys(form.fields).sort(), ["BankId", "EncData", "MerchantId", "TerminalId"]);
+    assert.equal(order.isgpayAttempts.length, 1);
+  } finally {
+    Object.assign(process.env, CFG);
+  }
+});

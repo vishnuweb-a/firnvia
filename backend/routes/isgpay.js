@@ -90,12 +90,15 @@ router.get("/availability", (_req, res) => {
 });
 
 // Trust boundary: only orderId is read; the amount comes from the stored order.
-router.post("/create", (req, res) => {
+function createPayment(req, res, { productionOnly = false } = {}) {
   const { orderId } = req.body || {};
   if (!orderId || typeof orderId !== "string") return res.status(400).json({ error: "orderId required." });
 
   const cfg = isgpayConfig();
   const blockers = isgpayInitiationBlockers(cfg);
+  if (productionOnly && cfg.env !== "production") {
+    blockers.push("ISGPay production required");
+  }
   if (blockers.length) {
     console.error("[isgpay create] unavailable:", blockers.join(", "));
     return res.status(503).json({ error: "ISGPay is unavailable." });
@@ -130,7 +133,10 @@ router.post("/create", (req, res) => {
   } finally {
     initiating.delete(order.id);
   }
-});
+}
+
+router.post("/create", (req, res) => createPayment(req, res));
+router.post("/create-production", (req, res) => createPayment(req, res, { productionOnly: true }));
 
 // Browser return (form POST). 303 to the order page; nothing decrypted goes in the URL.
 router.post("/return", async (req, res) => {

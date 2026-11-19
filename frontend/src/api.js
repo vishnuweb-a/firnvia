@@ -37,6 +37,8 @@ export const api = {
     req("/orders", { method: "POST", body: { items, buyer } }),
   getOrder: (id) => req(`/orders/${id}`),
   hdfcAvailability: () => req("/payment/hdfc/availability"),
+  initiateProductionIsgpay: (orderId) =>
+    req("/payments/isgpay/create-production", { method: "POST", body: { orderId } }),
   isgpayAvailability: () => req("/payments/isgpay/availability"),
   initiateAirPay: (orderId) => initiators.airpay(orderId),
   initiateSabPaisa: (orderId) => initiators.sabpaisa(orderId),
