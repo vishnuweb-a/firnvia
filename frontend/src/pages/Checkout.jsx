@@ -9,42 +9,50 @@ import {
   DEFAULT_PAYMENT_PROVIDER,
   checkoutProviders,
   handleCheckoutResult,
+  isgpayProvider,
   providerName,
   submitHostedPaymentForm,
 } from "../utils/payment.js";
 
 const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
 
-export default function Checkout() {
+export default function Checkout({ productionIsgpayOnly = false }) {
   const { items, total } = useCart();
   const navigate = useNavigate();
   const [buyer, setBuyer] = useState({ firstName: "", lastName: "", email: "", phone: "" });
-  const [provider, setProvider] = useState(DEFAULT_PAYMENT_PROVIDER);
+  const [selectedProvider, setProvider] = useState(DEFAULT_PAYMENT_PROVIDER);
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [hdfcEnabled, setHdfcEnabled] = useState(false);
   const [isgpayEnabled, setIsgpayEnabled] = useState(false);
   const [isgpayEnv, setIsgpayEnv] = useState();
+  const provider = productionIsgpayOnly ? "isgpay" : selectedProvider;
+  const productionIsgpayAvailable = isgpayEnabled && isgpayEnv === "production";
+  const [checkingIsgpay, setCheckingIsgpay] = useState(productionIsgpayOnly);
+  const providers = productionIsgpayOnly
+    ? [isgpayProvider("production")]
+    : checkoutProviders({ hdfcEnabled, isgpayEnabled, isgpayEnv });
   // ISGPay form kept for a visible Continue button if auto-submit is blocked.
   const [pendingForm, setPendingForm] = useState(null);
 
   // The backend decides; any error keeps the HDFC option hidden.
   useEffect(() => {
     let live = true;
-    api.hdfcAvailability()
+    if (!productionIsgpayOnly) api.hdfcAvailability()
       .then((r) => { if (live) setHdfcEnabled(r?.enabled === true); })
       .catch(() => {});
     api.isgpayAvailability()
       .then((r) => { if (live) { setIsgpayEnabled(r?.enabled === true); setIsgpayEnv(r?.env); } })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (live) setCheckingIsgpay(false); });
     return () => { live = false; };
-  }, []);
+  }, [productionIsgpayOnly]);
 
   const change = (e) => setBuyer({ ...buyer, [e.target.name]: e.target.value });
 
   const pay = async () => {
-    if (busy) return; // guards a second click landing before the disable renders
+    if (busy || (productionIsgpayOnly && !productionIsgpayAvailable)) return; // guards a second click landing before the disable renders
     setError(null);
     if (!buyer.firstName || !buyer.email || !buyer.phone)
       return setError("Please fill name, email, and phone.");
@@ -56,7 +64,9 @@ export default function Checkout() {
         items.map((i) => ({ id: i.id, qty: i.qty })),
         buyer
       );
-      const result = await api.initiatePayment(provider, order.id);
+      const result = productionIsgpayOnly
+        ? await api.initiateProductionIsgpay(order.id)
+        : await api.initiatePayment(provider, order.id);
 
       // AirPay without credentials still answers with a simulated checkout.
       if (result.simulated) {
@@ -84,15 +94,16 @@ export default function Checkout() {
     }
   };
 
+  const displayEnv = productionIsgpayOnly ? "production" : isgpayEnv;
   const payLabel = busy
-    ? `Opening ${providerName(provider, isgpayEnv)}…`
-    : `Pay ${inr(total)} with ${providerName(provider, isgpayEnv)}`;
+    ? `Opening ${providerName(provider, displayEnv)}…`
+    : `Pay ${inr(total)} with ${providerName(provider, displayEnv)}`;
 
   return (
     <App>
       <main className="page">
         <div className="container" style={{ maxWidth: 900 }}>
-          <h2 className="section-title">Checkout</h2>
+          <h2 className="section-title">{productionIsgpayOnly ? "Payment Checkout" : "Checkout"}</h2>
           {items.length === 0 ? (
             <p className="lead">Your cart is empty. <a href="/" style={{ color: "var(--accent-deep)" }}>Browse services</a>.</p>
           ) : (
@@ -116,8 +127,11 @@ export default function Checkout() {
                 ))}
                 <div className="summary-total" style={{ marginBottom: 22 }}><span>Total</span><span>{inr(total)}</span></div>
 
-                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={checkoutProviders({ hdfcEnabled, isgpayEnabled, isgpayEnv })} />
+                <PaymentMethodSelector value={provider} onChange={setProvider} disabled={busy} providers={providers} />
 
+                {productionIsgpayOnly && !productionIsgpayAvailable && (
+                  <p role="status">{checkingIsgpay ? "Checking ISGPay availability…" : "ISGPay is currently unavailable."}</p>
+                )}
                 <div className="consent">
                   <input id="agree" type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} aria-describedby="agree-help" />
                   <label htmlFor="agree">
@@ -129,16 +143,16 @@ export default function Checkout() {
                   See how we use your details in the <Link to="/privacy-policy" target="_blank" className="consent-link" style={{ textDecoration: "underline", color: "var(--accent-deep)" }}>Privacy Policy</Link>.
                   Digital products are not refundable for change of mind once delivered.
                 </p>
-                <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={pay}>
+                <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} disabled={busy || (productionIsgpayOnly && !productionIsgpayAvailable)} onClick={pay}>
                   {payLabel}
                 </button>
                 {pendingForm && (
                   <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} onClick={() => submitHostedPaymentForm(pendingForm)}>
-                    Continue to {providerName("isgpay", isgpayEnv)}
+                    Continue to {providerName("isgpay", displayEnv)}
                   </button>
                 )}
                 <p style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 12, textAlign: "center" }}>
-                  You'll be redirected to {providerName(provider, isgpayEnv)} to complete payment securely.
+                  You'll be redirected to {providerName(provider, displayEnv)} to complete payment securely.
                 </p>
               </div>
             </div>

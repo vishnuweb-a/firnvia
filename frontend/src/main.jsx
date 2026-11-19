@@ -46,6 +46,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/policies" element={<Policies />} />
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/checkout" element={<Checkout />} />
+          <Route path="/payment-checkout" element={<Checkout key="payment-checkout" productionIsgpayOnly />} />
           <Route path="/order/:id" element={<OrderStatus />} />
           <Route path="/terms-and-conditions" element={<TermsAndConditions />} />
           <Route path="/refund-and-cancellation-policy" element={<RefundAndCancellationPolicy />} />
